@@ -1,52 +1,153 @@
-# Genspark Master
+<p align="center">
+  <img src="docs/assets/hero_banner.jpg" alt="Genspark Master AI Suite Banner" width="100%" />
+</p>
 
-An unofficial, browser-session client and multi-agent skill suite for **Genspark** chat and image generation. It provides a Python CLI (`genspark` and `gsk`), six MCP tools, a local OpenAI-compatible proxy, and native global skills for **OpenAI Codex**, **Google Antigravity**, **Claude Code**, **OpenCode**, **Qwen**, and **Grok**.
+<h1 align="center">✨ Genspark Master AI Suite</h1>
 
-Authentication uses cookies and a reCAPTCHA token captured from a headed Genspark browser session. This project does not accept or store a Genspark API key.
+<p align="center">
+  <b>The Ultimate Browser-Session AI Engine for Chat, Image Generation, MCP, and Multi-Agent Skills</b>
+</p>
+
+<p align="center">
+  <a href="https://github.com/tody-agent/genspark-master/actions"><img src="https://img.shields.io/badge/build-passing-brightgreen.svg" alt="Build Status"></a>
+  <a href="https://python.org"><img src="https://img.shields.io/badge/python-3.10%2B-blue.svg" alt="Python 3.10+"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-purple.svg" alt="License"></a>
+  <a href="#-mcp-server-registration-multi-agent-support"><img src="https://img.shields.io/badge/MCP-Compatible-orange.svg" alt="MCP Compatible"></a>
+  <a href="#-supported-ai-models"><img src="https://img.shields.io/badge/Chat%20Models-15-cyan.svg" alt="15 Chat Models"></a>
+  <a href="#-supported-ai-models"><img src="https://img.shields.io/badge/Image%20Models-7-magenta.svg" alt="7 Image Models"></a>
+</p>
 
 ---
 
-## ⚡ Quick Start & Installation
+## 🚀 Overview
 
-### 1. Local Repository Installation
+**Genspark Master** turns your browser session into a high-performance, developer-first AI powerhouse. It provides a lightweight Python CLI (`genspark` and `gsk`), six production-grade MCP tools, a local OpenAI-compatible HTTP proxy server, and native global skills for **Google Antigravity**, **Claude Code**, **OpenAI Codex**, **OpenCode**, **Qwen**, and **Grok**.
 
-Python 3.10+ is required. From this repository directory:
+No API keys needed — authenticates safely via a headed Genspark browser login.
 
+---
+
+## 🔥 Key Features
+
+- 🔑 **Zero API Key Requirement**: Authenticates via browser session state (`storage_state.json` & reCAPTCHA token).
+- 🧠 **15 Flagship Chat AI Models**: Claude Opus 4.7, GPT-5.4 Pro, o3-pro, Gemini 3.1 Pro, Grok 4.20, and more.
+- 🎨 **7 Next-Gen Image Models**: Flux 2 Pro, GPT Image 2, Nano Banana 2, Seedream v5 Lite, Z-Image Turbo, up to 4K resolution & 170+ styles.
+- 🤖 **Universal Multi-Agent Skills**: Pre-packaged skills (`gen-chat`, `gen-imagegen`, `gen-setup`) ready for all AI coding CLI tools.
+- 🔌 **Built-in MCP Server**: Exposes 6 MCP tools for stdio clients (`chat`, `chat_with_context`, `generate_image`, `get_models`...).
+- 🌐 **Local OpenAI HTTP Proxy**: Run `genspark server start` to expose `http://127.0.0.1:8080/v1/chat/completions` for any OpenAI-compatible app.
+
+---
+
+## 🎨 Image Generation Showcase
+
+<p align="center">
+  <img src="docs/assets/image_showcase.jpg" alt="Showcase of AI-Generated Artwork Styles" width="100%" />
+</p>
+
+*Generate 170+ artistic styles across 14 aspect ratios (`16:9`, `9:16`, `1:1`, `3:4`...) and resolution output up to 4K.*
+
+---
+
+## 🎯 Real-World Use Cases
+
+### 💡 Use Case 1: Multi-Model Second Opinions & Code Reviews
+Want a second opinion on a complex system architecture or code refactor? Query different SOTA reasoning engines instantly:
 ```bash
+gsk chat ask "Analyze this deadlock condition in Python asyncio" --model claude-opus-4-7
+gsk chat ask "Provide a second opinion on memory safety" --model o3-pro
+```
+
+### 🎨 Use Case 2: Free High-Res AI Art & Assets for Web Apps
+Generate hero images, UI mockups, icons, and marketing assets directly from your terminal or AI Agent:
+```bash
+genspark image generate "editorial fashion portrait of a model in cyberpunk city" \
+  --model flux-2-pro \
+  --style "Oil Painting" \
+  --ratio 3:4 \
+  --size 2K \
+  --output ./assets
+```
+
+### 🌐 Use Case 3: Local OpenAI API Bridge for Coding Assistants
+Power Cursor, Continue, or custom scripts using your local Genspark proxy without paying per-token API fees:
+```bash
+# Start the local server
+genspark server start --port 8080
+
+# Call via standard OpenAI API client
+curl http://127.0.0.1:8080/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{"model": "gpt-5.4", "messages": [{"role": "user", "content": "Refactor this function"}]}'
+```
+
+### 🤖 Use Case 4: Autonomous Agent Execution (Antigravity, Codex, Claude Code)
+When working with AI Agents, invoke `gen-chat` or `gen-imagegen` skills directly inside your conversation context:
+```text
+User: "/gen-imagegen create an isometric 3D icon for my banking app using Flux 2 Pro"
+Agent: Executing Genspark CLI -> Tải ảnh 2K về thư mục dự án!
+```
+
+---
+
+## 🤖 Supported AI Models
+
+### 💬 Chat Models (15 SOTA Models)
+
+| Model ID | Provider | Tier | Reasoning | Context Window | Key Strengths |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `claude-opus-4-7` ★ | **Anthropic** | Ultra | **Yes** | **1,000,000** | **Default**. Flagship reasoning & deep codebase analysis. |
+| `claude-opus-4-6` | **Anthropic** | Premium | No | 200,000 | Deep logic analysis & code review. |
+| `claude-sonnet-4-6` | **Anthropic** | Fast | No | 200,000 | Fast, balanced everyday tasks. |
+| `claude-4-5-haiku` | **Anthropic** | Fast | No | 200,000 | Low-latency execution. |
+| `gpt-5.4-pro` | **OpenAI** | Premium | No | 200,000 | Premium GPT-5.4 reasoning engine. |
+| `gpt-5.4` | **OpenAI** | Premium | No | 200,000 | Standard GPT-5.4 flagship model. |
+| `gpt-5.4-mini` | **OpenAI** | Fast | No | 200,000 | Fast general-purpose tier. |
+| `gpt-5.4-nano` | **OpenAI** | Fast | No | 200,000 | Ultra-lightweight tier. |
+| `gpt-5.2-pro` | **OpenAI** | Premium | No | 200,000 | Pro tier GPT-5.2 engine. |
+| `o3-pro` | **OpenAI** | Premium | **Yes** | 200,000 | Deep step-by-step reasoning (100k output tokens). |
+| `gemini-3.1-pro-preview` | **Google** | Premium | No | 200,000 | Advanced Google long-context reasoning. |
+| `gemini-2.5-pro` | **Google** | Premium | No | 200,000 | Stable Google Pro model. |
+| `gemini-3-flash-preview` | **Google** | Fast | No | 200,000 | Ultra-fast Google Flash model. |
+| `grok-4.20-0309-reasoning` | **xAI** | Premium | **Yes** | 200,000 | xAI deep reasoning model (100k output tokens). |
+| `grok-4.20-0309-non-reasoning` | **xAI** | Premium | No | 200,000 | High-performance xAI model. |
+
+---
+
+### 🎨 Image Generation Models (7 Next-Gen Engines)
+
+| Model ID | Provider | Max Res | Best For / Key Features |
+| :--- | :--- | :--- | :--- |
+| `nano-banana-2` ★ | **Google** | **4K** | **Default**. Gemini 3.1 Flash Image. Fast generation with advanced reasoning. |
+| `flux-2-pro` | **Black Forest Labs** | **4K** | Premium quality, photorealism, fine details, cinematic lighting. |
+| `gpt-image-2` | **OpenAI** | **4K** | Superior text rendering, precise elements, face preservation. |
+| `nano-banana-pro` | **Genspark** | **4K** | SOTA generation & editing. Multi-image composition (up to 14 input images). |
+| `seedream-v5-lite` | **ByteDance** | **3K** | Multi-image editing, Chinese typography, fashion & portraiture. |
+| `z-image-turbo` | **Genspark** | **2K** | Ultra-fast generation. |
+| `flux-2` | **Black Forest Labs** | **2K** | Enhanced realism with crisp text and fast composition editing. |
+
+---
+
+## ⚡ Installation & Setup
+
+### 1. Clone & Install Environment
+Python 3.10+ is required:
+```bash
+git clone https://github.com/tody-agent/genspark-master.git
+cd genspark-master
 ./scripts/install.sh
 ```
 
-The installer creates or reuses `.venv`, installs browser/MCP/proxy support, installs Playwright Chromium, and runs the offline doctor.
-
-To omit Playwright and Chromium (headless/pre-authenticated mode):
-
-```bash
-./scripts/install.sh --no-browser
-```
-
-### 2. Global CLI Symlinks
-
-To use `genspark`, `gsk`, and `genspark-mcp` from any terminal directory:
-
+### 2. Global Executables Symlink
+Symlink CLI executables into `~/.local/bin/` so you can run `genspark` or `gsk` from any shell folder:
 ```bash
 ln -sf $(pwd)/.venv/bin/genspark ~/.local/bin/genspark
 ln -sf $(pwd)/.venv/bin/gsk ~/.local/bin/gsk
 ln -sf $(pwd)/.venv/bin/genspark-mcp ~/.local/bin/genspark-mcp
 ```
 
----
-
-## 🌐 Global Skill Deployment for AI Agents
-
-Genspark Master includes 3 production-grade agent skills:
-- **`gen-chat`**: Chat, answer comparison, and model querying via Genspark.
-- **`gen-imagegen`**: Image generation with style selection, custom aspect ratio, and resolution controls.
-- **`gen-setup`**: Diagnostic, verification, and MCP setup.
-
-To install these skills globally across all AI Agent environments on your system:
-
+### 3. Deploy Multi-Agent Skills Globally
+To make `gen-chat`, `gen-imagegen`, and `gen-setup` available to all AI agents on your machine:
 ```bash
-# Create target skill directories
 mkdir -p ~/.gemini/config/skills \
          ~/.gemini/antigravity/skills \
          ~/.claude/skills \
@@ -55,7 +156,6 @@ mkdir -p ~/.gemini/config/skills \
          ~/.qwen/skills \
          ~/.grok/skills
 
-# Deploy skills globally
 for skill in gen-chat gen-imagegen gen-setup; do
   cp -r ./skills/$skill ~/.gemini/config/skills/
   cp -r ./skills/$skill ~/.gemini/antigravity/skills/
@@ -74,9 +174,7 @@ done
 Register `genspark-mcp` across your AI Agent configuration files.
 
 ### Standard `mcp.json` (Claude Code, OpenAI Codex, Google Antigravity)
-
 Add to `~/.claude/mcp.json`, `~/.codex/mcp.json`, or `~/.gemini/config/mcp_config.json`:
-
 ```json
 {
   "mcpServers": {
@@ -88,9 +186,7 @@ Add to `~/.claude/mcp.json`, `~/.codex/mcp.json`, or `~/.gemini/config/mcp_confi
 ```
 
 ### OpenCode `opencode.json`
-
 Add to `~/.config/opencode/opencode.json`:
-
 ```json
 {
   "mcp": {
@@ -105,108 +201,38 @@ Add to `~/.config/opencode/opencode.json`:
 
 ---
 
-## 🔐 Browser Authentication
+## 🔐 Authentication
 
-Authenticate using a headed browser session:
+Authenticate using a headed Playwright browser window:
 
 ```bash
 genspark auth login
 genspark auth status
 ```
 
-1. Running `genspark auth login` opens a Playwright browser window.
-2. Sign in to Genspark and send one chat message so the client captures the browser request token.
-3. Subsequent chat/image requests use HTTP with the saved browser state. An expired token is refreshed automatically once per request when possible.
-
-Credentials are stored locally under `~/.genspark/profiles/<profile>/` with private permissions:
-- `storage_state.json`: Browser cookies and local storage.
-- `recaptcha_token.txt`: Captured request token.
-- `session.json`: Conversation metadata.
+1. Running `genspark auth login` opens a browser window.
+2. Sign in to Genspark and send 1 chat message so the token is captured.
+3. Credentials are saved locally with private permissions under `~/.genspark/profiles/<profile>/`.
 
 ---
 
-## 💡 Usage Guide
+## 🛠️ Diagnostics & Quality Gate
 
-### Chat via CLI & Skills
-
-```bash
-# List available models
-genspark models list --json
-
-# Ask a prompt (JSON output)
-genspark chat ask "Explain the trade-offs of microservices" --json
-
-# Specify a target model using the gsk alias
-gsk chat ask "Provide a second opinion" --model claude-opus-4-6
-
-# Interactive chat session
-genspark chat
-```
-
-### Image Generation
-
-```bash
-# List image models & styles
-genspark image models --json
-genspark image styles --search "watercolor" --json
-
-# Generate and download image to current directory
-genspark image generate "a peaceful mountain lake at sunrise"
-
-# Advanced parameters
-genspark image generate "editorial fashion portrait" \
-  --model flux-2-pro \
-  --style "Oil Painting" \
-  --ratio 3:4 \
-  --size 2K \
-  --output ./downloads
-
-# Generate without downloading (returns URL JSON)
-genspark image generate "minimalist logo design" --no-download --json
-```
-
-### Local OpenAI-Compatible HTTP Proxy
-
-Serve an OpenAI-compatible endpoint locally using your saved Genspark session:
-
-```bash
-genspark server start --host 127.0.0.1 --port 8080
-```
-
-Example request:
-
-```bash
-curl http://127.0.0.1:8080/v1/chat/completions \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "model": "gpt-5.4",
-    "messages": [{"role": "user", "content": "Hello Genspark Proxy"}]
-  }'
-```
-
----
-
-## 🛠️ Diagnostics & Verification
-
-Run offline machine-readable health checks:
-
+Run offline health checks:
 ```bash
 genspark doctor --json
 genspark capabilities --json
 ```
 
-To run the complete test suite and package validation gate:
-
+Run full test suite (106 unit tests + bytecode compilation + plugin check):
 ```bash
 ./scripts/test_gate.sh
 ```
 
 ---
 
-## 📜 Disclaimer
+## 📜 Disclaimer & License
 
-This is an unofficial client relying on Genspark's browser flow and internal endpoints. Endpoints, model identifiers, availability, and rate limits can change without notice. Use only with accounts and data you are authorized to access.
+*This is an unofficial browser-session client and skill suite. All model trademarks belong to their respective creators (OpenAI, Anthropic, Google, Black Forest Labs, ByteDance, xAI, Genspark).*
 
-## 📄 License
-
-MIT
+Released under the [MIT License](LICENSE).

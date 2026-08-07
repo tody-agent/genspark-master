@@ -1,21 +1,15 @@
-<p align="center">
-  <img src="docs/assets/hero_banner.jpg" alt="Genspark Master AI Suite Banner" width="100%" />
-</p>
+![Genspark Master AI Suite Banner](https://raw.githubusercontent.com/tody-agent/genspark-master/main/docs/assets/hero_banner.jpg)
 
-<h1 align="center">✨ Genspark Master AI Suite</h1>
+# ✨ Genspark Master AI Suite
 
-<p align="center">
-  <b>The Ultimate Browser-Session AI Engine for Chat, Image Generation, MCP, and Multi-Agent Skills</b>
-</p>
+**The Ultimate Browser-Session AI Engine for Chat, Image Generation, MCP, and Multi-Agent Skills**
 
-<p align="center">
-  <a href="https://github.com/tody-agent/genspark-master/actions"><img src="https://img.shields.io/badge/build-passing-brightgreen.svg" alt="Build Status"></a>
-  <a href="https://python.org"><img src="https://img.shields.io/badge/python-3.10%2B-blue.svg" alt="Python 3.10+"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-purple.svg" alt="License"></a>
-  <a href="#-mcp-server-registration-multi-agent-support"><img src="https://img.shields.io/badge/MCP-Compatible-orange.svg" alt="MCP Compatible"></a>
-  <a href="#-supported-ai-models"><img src="https://img.shields.io/badge/Chat%20Models-15-cyan.svg" alt="15 Chat Models"></a>
-  <a href="#-supported-ai-models"><img src="https://img.shields.io/badge/Image%20Models-7-magenta.svg" alt="7 Image Models"></a>
-</p>
+[![Build Status](https://img.shields.io/badge/build-passing-brightgreen.svg)](https://github.com/tody-agent/genspark-master/actions)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://python.org)
+[![License](https://img.shields.io/badge/license-MIT-purple.svg)](LICENSE)
+[![MCP Compatible](https://img.shields.io/badge/MCP-Compatible-orange.svg)](#-mcp-server-registration-multi-agent-support)
+[![15 Chat Models](https://img.shields.io/badge/Chat%20Models-15-cyan.svg)](#-supported-ai-models)
+[![7 Image Models](https://img.shields.io/badge/Image%20Models-7-magenta.svg)](#-supported-ai-models)
 
 ---
 
@@ -40,9 +34,7 @@ No API keys needed — authenticates safely via a headed Genspark browser login.
 
 ## 🎨 Image Generation Showcase
 
-<p align="center">
-  <img src="docs/assets/image_showcase.jpg" alt="Showcase of AI-Generated Artwork Styles" width="100%" />
-</p>
+![Showcase of AI-Generated Artwork Styles](https://raw.githubusercontent.com/tody-agent/genspark-master/main/docs/assets/image_showcase.jpg)
 
 *Generate 170+ artistic styles across 14 aspect ratios (`16:9`, `9:16`, `1:1`, `3:4`...) and resolution output up to 4K.*
 

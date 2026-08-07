@@ -1,0 +1,43 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "genspark-cli"
+version = "0.5.0"
+description = "Browser-token CLI, MCP server, and OpenAI-compatible proxy for Genspark chat and image generation"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10"
+authors = [
+    {name = "CodyMaster"}
+]
+
+dependencies = [
+    "click>=8.1",
+    "httpx>=0.27",
+    "aiohttp>=3.9",
+    "rich>=13.0",
+    "pydantic>=2.0",
+]
+
+[project.optional-dependencies]
+# Stealth browser for login (recommended)
+stealth = ["cloakbrowser>=0.3"]
+# Standard browser for login (fallback)
+browser = ["playwright>=1.40"]
+# OpenAI proxy server
+server = ["aiohttp>=3.9"]
+# MCP server for AI agent integration
+mcp = ["mcp[cli]>=1.20,<3"]
+# Development
+dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "build>=1.2"]
+all = ["playwright>=1.40", "aiohttp>=3.9", "mcp[cli]>=1.20,<3"]
+
+[project.scripts]
+genspark = "genspark_cli.cli:main"
+gsk = "genspark_cli.cli:main"
+genspark-mcp = "genspark_cli.mcp:run_mcp_server"
+
+[tool.setuptools.packages.find]
+include = ["genspark_cli*"]

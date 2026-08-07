@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "genspark": {
+      "command": "./scripts/run-mcp.sh",
+      "args": [],
+      "cwd": "."
+    }
+  }
+}

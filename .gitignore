@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+*.egg-info/
+build/
+dist/
+
+# Genspark credentials & session (NEVER commit)
+.env
+.env.*
+!.env.example
+recaptcha_token.txt
+storage_state.json
+session.json
+config.json
+conversations/
+
+# OS / editor / tooling
+.DS_Store
+.pytest_cache/
+.cm/

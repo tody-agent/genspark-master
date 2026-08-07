@@ -1,0 +1,26 @@
+{
+  "name": "genspark-master",
+  "version": "0.5.0",
+  "description": "Browser-token Genspark chat, image, proxy, and MCP tools for Codex",
+  "author": {
+    "name": "CodyMaster"
+  },
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Genspark Master",
+    "shortDescription": "Use Genspark through a browser-authenticated session.",
+    "longDescription": "Chat, generate images, and run a local OpenAI-compatible proxy through browser-derived Genspark cookies and reCAPTCHA tokens.",
+    "developerName": "CodyMaster",
+    "category": "Productivity",
+    "capabilities": [
+      "Interactive",
+      "Write"
+    ],
+    "defaultPrompt": [
+      "Set up my browser-authenticated Genspark session.",
+      "Ask Genspark to answer this question.",
+      "Generate an image with Genspark."
+    ]
+  },
+  "mcpServers": "./.mcp.json"
+}

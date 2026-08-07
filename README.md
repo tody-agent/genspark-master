@@ -13,11 +13,17 @@
 
 ---
 
-## 🚀 Overview
+## 🚀 System Architecture
+
+![Genspark Master System Architecture](https://raw.githubusercontent.com/tody-agent/genspark-master/main/docs/assets/architecture_diagram.jpg)
 
 **Genspark Master** turns your browser session into a high-performance, developer-first AI powerhouse. It provides a lightweight Python CLI (`genspark` and `gsk`), six production-grade MCP tools, a local OpenAI-compatible HTTP proxy server, and native global skills for **Google Antigravity**, **Claude Code**, **OpenAI Codex**, **OpenCode**, **Qwen**, and **Grok**.
 
-No API keys needed — authenticates safely via a headed Genspark browser login.
+---
+
+## 💻 Developer Terminal Experience
+
+![Genspark Master Terminal Experience](https://raw.githubusercontent.com/tody-agent/genspark-master/main/docs/assets/cli_terminal_preview.jpg)
 
 ---
 
@@ -32,7 +38,7 @@ No API keys needed — authenticates safely via a headed Genspark browser login.
 
 ---
 
-## 🎨 Image Generation Showcase
+## 🎨 Image Generation Gallery
 
 ![Showcase of AI-Generated Artwork Styles](https://raw.githubusercontent.com/tody-agent/genspark-master/main/docs/assets/image_showcase.jpg)
 
@@ -43,7 +49,7 @@ No API keys needed — authenticates safely via a headed Genspark browser login.
 ## 🎯 Real-World Use Cases
 
 ### 💡 Use Case 1: Multi-Model Second Opinions & Code Reviews
-Want a second opinion on a complex system architecture or code refactor? Query different SOTA reasoning engines instantly:
+Query different SOTA reasoning engines instantly for architecture reviews or code security audits:
 ```bash
 gsk chat ask "Analyze this deadlock condition in Python asyncio" --model claude-opus-4-7
 gsk chat ask "Provide a second opinion on memory safety" --model o3-pro

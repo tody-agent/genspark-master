@@ -146,7 +146,7 @@ MODELS: dict[str, ModelInfo] = {
 }
 
 # Mixture-of-Agents uses a comma-separated list of model IDs
-MOA_MODEL_IDS = "gpt-5.1-low,claude-sonnet-4-6,gemini-3.1-pro-preview"
+MOA_MODEL_IDS = "gpt-5.4-mini,claude-sonnet-4-6,gemini-3.1-pro-preview"
 
 # Default model when none specified
 DEFAULT_MODEL = "claude-opus-4-7"

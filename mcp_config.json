@@ -1,0 +1,7 @@
+{
+  "mcpServers": {
+    "genspark": {
+      "command": "bin/genspark-mcp"
+    }
+  }
+}

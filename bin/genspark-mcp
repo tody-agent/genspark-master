@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Resolve symlinks canonically so this works when symlinked into ~/.local/bin
+SOURCE="${BASH_SOURCE[0]}"
+while [ -L "$SOURCE" ]; do
+    DIR="$(cd -P "$(dirname "$SOURCE")" >/dev/null 2>&1 && pwd)"
+    SOURCE="$(readlink "$SOURCE")"
+    [[ $SOURCE != /* ]] && SOURCE="$DIR/$SOURCE"
+done
+SCRIPT_DIR="$(cd -P "$(dirname "$SOURCE")" >/dev/null 2>&1 && pwd)"
+PLUGIN_ROOT="$(cd -P "$SCRIPT_DIR/.." >/dev/null 2>&1 && pwd)"
+
+# 1. Local virtual environment in plugin root
+if [ -x "$PLUGIN_ROOT/.venv/bin/genspark-mcp" ]; then
+    exec "$PLUGIN_ROOT/.venv/bin/genspark-mcp" "$@"
+fi
+if [ -x "$PLUGIN_ROOT/.venv/bin/python" ]; then
+    cd "$PLUGIN_ROOT"
+    exec "$PLUGIN_ROOT/.venv/bin/python" -m genspark_cli.mcp "$@"
+fi
+
+# 2. Virtual environment in ~/.genspark/venv
+if [ -x "$HOME/.genspark/venv/bin/genspark-mcp" ]; then
+    exec "$HOME/.genspark/venv/bin/genspark-mcp" "$@"
+fi
+if [ -x "$HOME/.genspark/venv/bin/python" ]; then
+    cd "$PLUGIN_ROOT"
+    exec "$HOME/.genspark/venv/bin/python" -m genspark_cli.mcp "$@"
+fi
+
+# 3. Fallback to system python3 with PYTHONPATH
+if command -v python3 >/dev/null 2>&1; then
+    cd "$PLUGIN_ROOT"
+    export PYTHONPATH="$PLUGIN_ROOT${PYTHONPATH:+:$PYTHONPATH}"
+    exec python3 -m genspark_cli.mcp "$@"
+fi
+
+echo "Error: Genspark MCP runtime not found. Please run ./scripts/install.sh" >&2
+exit 1

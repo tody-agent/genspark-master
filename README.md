@@ -85,6 +85,20 @@ User: "/gen-imagegen create an isometric 3D icon for my banking app using Flux 2
 Agent: Executing Genspark CLI -> Tải ảnh 2K về thư mục dự án!
 ```
 
+### ⚡ Use Case 5: Fast AI Runner & Autonomous Code Execution (`genspark run`)
+Execute questions, piped inputs, code reviews, and run AI-generated scripts in real-time:
+```bash
+# Direct execution with live streaming
+genspark run "Explain how WebSockets work under the hood"
+
+# Pipe stdin from files or Git
+git diff | genspark run "Review these changes for security vulnerabilities"
+
+# Autonomous Code Runner (extracts and runs generated Python/Bash scripts locally)
+genspark run -x "Write a Python script to benchmark memory throughput"
+```
+
+
 ---
 
 ## 🤖 Supported AI Models

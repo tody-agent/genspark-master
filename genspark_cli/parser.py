@@ -164,10 +164,12 @@ def parse_sse_stream(raw_text: str) -> Generator[ChatChunk, None, None]:
         content = ""
         if "content" in data and isinstance(data["content"], str):
             content = data["content"]
-        elif "delta" in data and isinstance(data["delta"], dict):
-            content = data["delta"].get("content", "")
+        elif "message" in data and isinstance(data["message"], dict):
+            content = data["message"].get("content", "")
         elif "message" in data and isinstance(data["message"], str):
             content = data["message"]
+        elif "delta" in data and isinstance(data["delta"], dict):
+            content = data["delta"].get("content", "")
         elif "text" in data and isinstance(data["text"], str):
             content = data["text"]
 

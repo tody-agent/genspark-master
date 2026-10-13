@@ -54,7 +54,7 @@ def build_chat_payload(
     payload_messages = messages if messages else [message]
     return {
         "model_params": {"type": "chat", "model": model},
-        "type": "ai_chat_agent",
+        "type": "agent_chat",
         "project_id": project_id,
         "messages": payload_messages,
         "user_s_input": prompt,

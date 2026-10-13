@@ -572,7 +572,242 @@ def ask(ctx, prompt, model, stream, json_out, raw, profile):
         sys.exit(1)
 
 
+
+# ── Run Command ──────────────────────────────────────────────────────────
+
+def _extract_and_execute_code(content: str, raw: bool = False) -> int:
+    """Extract code blocks from AI response and execute them locally."""
+    import re
+    import subprocess
+    import time
+
+    # Match fenced code blocks with language
+    code_blocks = re.findall(r"```([a-zA-Z0-9_\-+]*)\n(.*?)```", content, re.DOTALL)
+    if not code_blocks:
+        if not raw:
+            console.print("[yellow]⚠ No executable code blocks found in the response.[/]")
+        return 0
+
+    overall_exit_code = 0
+    for idx, (lang, code) in enumerate(code_blocks, 1):
+        lang = (lang or "bash").strip().lower()
+        if lang in ("python", "python3", "py"):
+            exec_lang = "python"
+        elif lang in ("bash", "sh", "zsh"):
+            exec_lang = "bash"
+        else:
+            # Skip non-executable languages like markdown, json, yaml, etc.
+            continue
+
+        code_to_run = code.strip()
+        if not code_to_run:
+            continue
+
+        if not raw:
+            preview = code_to_run[:200] + ("..." if len(code_to_run) > 200 else "")
+            console.print(Panel(
+                f"[bold cyan]⚡ Running Code Block #{idx} ({exec_lang.upper()})[/]\n"
+                f"[dim]{preview}[/]",
+                border_style="cyan"
+            ))
+
+        start_time = time.time()
+        try:
+            if exec_lang == "python":
+                cmd = [sys.executable, "-c", code_to_run]
+            else:
+                cmd = ["bash", "-c", code_to_run]
+
+            proc = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+            elapsed = time.time() - start_time
+
+            if proc.stdout:
+                if raw:
+                    sys.stdout.write(proc.stdout)
+                else:
+                    console.print(Panel(proc.stdout.rstrip(), title="[green]STDOUT[/]", border_style="green"))
+            if proc.stderr:
+                if raw:
+                    sys.stderr.write(proc.stderr)
+                else:
+                    console.print(Panel(proc.stderr.rstrip(), title="[red]STDERR[/]", border_style="red"))
+
+            if not raw:
+                status_color = "green" if proc.returncode == 0 else "red"
+                console.print(f"[{status_color}]✓ Block #{idx} finished with exit code {proc.returncode} ({elapsed:.2f}s)[/]\n")
+
+            if proc.returncode != 0:
+                overall_exit_code = proc.returncode
+        except subprocess.TimeoutExpired:
+            if not raw:
+                console.print(f"[red]❌ Execution of Block #{idx} timed out after 120s[/]")
+            overall_exit_code = 124
+        except Exception as e:
+            if not raw:
+                console.print(f"[red]❌ Execution error on Block #{idx}: {e}[/]")
+            overall_exit_code = 1
+
+    return overall_exit_code
+
+
+@main.command(name="run")
+@click.argument("prompt", required=False, default=None)
+@click.option("--file", "-f", "files", multiple=True, type=click.Path(exists=True),
+              help="File(s) to include as context")
+@click.option("--model", "-m", default=DEFAULT_MODEL,
+              help=f"Model to use (default: {DEFAULT_MODEL})")
+@click.option("--stream/--no-stream", default=True,
+              help="Stream response in real-time (default: True)")
+@click.option("--exec", "-x", "execute_code", is_flag=True, default=False,
+              help="Extract and execute generated code blocks locally (python/bash)")
+@click.option("--raw", "-r", is_flag=True, default=False,
+              help="Output raw text without formatting (ideal for piping)")
+@click.option("--json", "json_out", is_flag=True, default=False,
+              help="Output response as OpenAI-compatible JSON")
+@click.option("--system", "-s", "system_prompt", default=None,
+              help="Optional system prompt / instructions")
+@click.option("--profile", "-p", default=None,
+              help="Account profile to use")
+@click.option("--server", is_flag=True, default=False,
+              help="Shortcut: Start OpenAI API proxy server")
+@click.option("--mcp", "run_mcp", is_flag=True, default=False,
+              help="Shortcut: Start stdio MCP server")
+@click.pass_context
+def run_command(ctx, prompt, files, model, stream, execute_code, raw, json_out, system_prompt, profile, server, run_mcp):
+    """⚡ Fast AI Runner — Execute prompts, pipes, files, code & servers.
+
+    \b
+    Examples:
+      # Direct prompt execution
+      genspark run "Write a quick Python script to check internet connection"
+      
+      # Pipe input from stdin
+      git diff | genspark run "Review these code changes"
+      cat logs.txt | genspark run "Explain this error stack trace" -r
+      
+      # Include files as context
+      genspark run -f main.py "Refactor this code cleanly"
+      genspark run -f schema.sql "Generate Pydantic models for this schema"
+      
+      # Autonomous Code Runner (extracts and executes AI code locally)
+      genspark run -x "Write a python script to calculate sha256 of pyproject.toml"
+      genspark run -x "List all git branches sorted by last commit date"
+      
+      # Shortcuts for servers
+      genspark run server
+      genspark run mcp
+    """
+    # 1. Handle shortcuts: server / mcp
+    if server or prompt == "server":
+        ctx.invoke(start)
+        return
+    if run_mcp or prompt == "mcp":
+        from .mcp import run_mcp_server
+        run_mcp_server()
+        return
+
+    # 2. Gather prompt from args or STDIN
+    stdin_content = ""
+    if not sys.stdin.isatty():
+        try:
+            stdin_content = sys.stdin.read()
+        except Exception:
+            pass
+
+    full_prompt_parts = []
+    if system_prompt:
+        full_prompt_parts.append(f"[System Instruction]\n{system_prompt}\n")
+
+    # Add file contexts
+    if files:
+        for fpath in files:
+            p = Path(fpath)
+            try:
+                content = p.read_text(encoding="utf-8", errors="replace")
+                full_prompt_parts.append(f"--- File: {p.name} ---\n{content}\n")
+            except Exception as e:
+                console.print(f"[yellow]Warning: Could not read file {fpath}: {e}[/]")
+
+    if stdin_content:
+        full_prompt_parts.append(f"--- Standard Input ---\n{stdin_content}\n")
+
+    if prompt:
+        full_prompt_parts.append(prompt)
+
+    if not full_prompt_parts:
+        console.print("[red]Error:[/] No prompt provided. Provide a prompt argument, pipe via stdin, or run [cyan]genspark run --help[/]")
+        sys.exit(1)
+
+    final_prompt = "\n\n".join(full_prompt_parts).strip()
+
+    # 3. Setup Session & Model
+    from .client import run_chat
+    from .account_router import AccountRouter
+
+    pm = get_profile_manager()
+    try:
+        router = AccountRouter(pm)
+        session = router.get_session(preferred=profile)
+    except Exception as e:
+        console.print(f"[red]Error:[/] {e}")
+        sys.exit(1)
+
+    try:
+        model_info = resolve_model(model)
+    except ValueError as e:
+        console.print(f"[red]Error:[/] {e}")
+        sys.exit(1)
+
+    if not json_out and not raw:
+        profile_label = f" [dim]({session.profile_name})[/]" if session.profile_name != "default" else ""
+        console.print(f"[dim]⚡ Running with {model_info.display_name}{profile_label}...[/]")
+
+    try:
+        result = run_chat(
+            session=session,
+            prompt=final_prompt,
+            model=model_info.id,
+            stream=stream and not json_out and not raw and not execute_code,
+        )
+
+        if json_out:
+            output = result.to_openai_format()
+            click.echo(json.dumps(output, indent=2, ensure_ascii=False))
+        elif raw:
+            click.echo(result.content)
+        else:
+            if not stream or execute_code:
+                if result.content:
+                    console.print(Panel(
+                        Markdown(result.content),
+                        title=f"[bold]{model_info.display_name}[/]",
+                        border_style="green",
+                        padding=(1, 2),
+                    ))
+                else:
+                    console.print("[yellow]No response received.[/]")
+
+        # 4. If --exec was passed, execute code blocks
+        if execute_code and result.content:
+            exit_code = _extract_and_execute_code(result.content, raw=raw)
+            if exit_code != 0:
+                sys.exit(exit_code)
+
+    except GensparkError as e:
+        console.print(f"[red]Error:[/] {e}")
+        sys.exit(1)
+    except Exception as e:
+        console.print(f"[red]Unexpected error:[/] {e}")
+        sys.exit(1)
+
+
 # ── Session Commands ─────────────────────────────────────────────────────
+
 
 @main.group()
 def session():
@@ -743,6 +978,8 @@ def list_cmd(tier, provider, json_out):
                 "name": m.display_name,
                 "provider": m.provider,
                 "tier": m.tier,
+                "multiplier": m.multiplier,
+                "recommended": m.is_recommended,
             }
             for m in models_list
         ]
@@ -758,15 +995,17 @@ def list_cmd(tier, provider, json_out):
     table.add_column("Name", style="white")
     table.add_column("Provider", style="blue")
     table.add_column("Tier", style="yellow")
+    table.add_column("Multiplier", style="magenta")
 
     default_id = DEFAULT_MODEL
     for m in models_list:
-        marker = " ★" if m.id == default_id else ""
-        table.add_row(m.id, m.display_name + marker, m.provider, m.tier)
+        marker = " ★" if m.id == default_id else (" 🔥" if m.is_recommended else "")
+        mult_str = f"{m.multiplier}×"
+        table.add_row(m.id, m.display_name + marker, m.provider, m.tier, mult_str)
 
     console.print(table)
-    console.print(f"\n[dim]★ = default model. Override with --model <id>[/]")
-    console.print(f"[dim]Total: {len(models_list)} models available FREE[/]")
+    console.print(f"\n[dim]★ = default model ({DEFAULT_MODEL}). 🔥 = recommended. Override with --model <id>[/]")
+    console.print(f"[dim]Total: {len(models_list)} models available[/]")
 
 
 # ── Server Command ───────────────────────────────────────────────────────
@@ -812,6 +1051,16 @@ def start(port, host, model):
     run_server(host=host, port=port, default_model=model)
 
 
+@server.command(name="run")
+@click.option("--port", "-p", default=8080, help="Port to listen on")
+@click.option("--host", default="127.0.0.1", help="Host to bind to")
+@click.option("--model", "-m", default=DEFAULT_MODEL, help="Default model")
+@click.pass_context
+def server_run(ctx, port, host, model):
+    """Run the OpenAI-compatible proxy server (alias to start)."""
+    ctx.invoke(start, port=port, host=host, model=model)
+
+
 # ── MCP Commands ─────────────────────────────────────────────────────────
 
 @main.group()
@@ -820,8 +1069,23 @@ def mcp():
     pass
 
 
+@mcp.command(name="start")
+def mcp_start():
+    """Start the Genspark stdio MCP server directly."""
+    from .mcp import run_mcp_server
+    run_mcp_server()
+
+
+@mcp.command(name="run")
+def mcp_run():
+    """Run the Genspark stdio MCP server directly."""
+    from .mcp import run_mcp_server
+    run_mcp_server()
+
+
 @mcp.command()
 def info():
+
     """Show MCP configuration for various AI agents.
 
     Displays ready-to-use config for Claude Code, Gemini CLI,

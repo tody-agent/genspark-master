@@ -13,15 +13,16 @@ from dataclasses import asdict
 from typing import Any
 
 from .account_router import AccountRouter
+from .batch import BatchTask, MultiAccountBatchExecutor
 from .client import GensparkClient
-from .exceptions import RateLimitError, RecaptchaError, SessionExpiredError
+from .exceptions import QuotaExhaustedError, RateLimitError, RecaptchaError, SessionExpiredError
 from .image_client import GensparkImageClient
 from .image_models import list_image_models as _list_image_models
 from .models import list_models
 from .profiles import ProfileManager
 
 
-ROUTING_ERRORS = (RateLimitError, SessionExpiredError, RecaptchaError)
+ROUTING_ERRORS = (QuotaExhaustedError, RateLimitError, SessionExpiredError, RecaptchaError)
 
 
 def _default_router() -> AccountRouter:
@@ -49,6 +50,10 @@ async def _with_failover(
         except ROUTING_ERRORS as exc:
             last_error = exc
             router.mark_unhealthy(profile, reason=type(exc).__name__)
+        except Exception:
+            if hasattr(router, "release_session"):
+                router.release_session(profile)
+            raise
 
     if last_error is not None:
         raise last_error
@@ -159,6 +164,103 @@ def list_image_models() -> dict[str, Any]:
     return {"models": [asdict(model) for model in _list_image_models()]}
 
 
+async def batch_chat(
+    prompts: list[str],
+    model: str | None = None,
+    system_prompt: str | None = None,
+    max_concurrency: int = 4,
+    *,
+    router: AccountRouter | None = None,
+    client_factory: Callable[[Any], Any] = GensparkClient,
+) -> dict[str, Any]:
+    """Run multiple chat prompts concurrently across the multi-account pool."""
+    account_router = router or _default_router()
+    tasks = [
+        BatchTask(
+            id=f"chat-{idx}",
+            prompt=p,
+            model=model,
+            system_prompt=system_prompt,
+        )
+        for idx, p in enumerate(prompts, 1)
+    ]
+    executor = MultiAccountBatchExecutor(
+        router=account_router,
+        chat_client_factory=client_factory,
+    )
+    results = await executor.execute_chat_batch(tasks, concurrency=max_concurrency)
+    succeeded = sum(1 for r in results if r.status == "ok")
+    return {
+        "total": len(results),
+        "succeeded": succeeded,
+        "failed": len(results) - succeeded,
+        "results": [r.to_dict() for r in results],
+    }
+
+
+async def batch_generate_images(
+    prompts: list[str],
+    model: str | None = None,
+    style: str = "auto",
+    aspect_ratio: str = "auto",
+    image_size: str = "auto",
+    max_concurrency: int = 3,
+    *,
+    router: AccountRouter | None = None,
+    client_factory: Callable[[Any], Any] = GensparkImageClient,
+) -> dict[str, Any]:
+    """Generate multiple images concurrently across the multi-account pool."""
+    account_router = router or _default_router()
+    tasks = [
+        BatchTask(id=f"img-{idx}", prompt=p, model=model)
+        for idx, p in enumerate(prompts, 1)
+    ]
+    executor = MultiAccountBatchExecutor(
+        router=account_router,
+        image_client_factory=client_factory,
+    )
+    results = await executor.execute_image_batch(
+        tasks,
+        concurrency=max_concurrency,
+        style=style,
+        aspect_ratio=aspect_ratio,
+        image_size=image_size,
+        download=False,
+    )
+    succeeded = sum(1 for r in results if r.status == "ok")
+    return {
+        "total": len(results),
+        "succeeded": succeeded,
+        "failed": len(results) - succeeded,
+        "results": [r.to_dict() for r in results],
+    }
+
+
+def configure_pool(
+    strategy: str | None = None,
+    max_concurrency: int | None = None,
+    reset_cooldowns: bool = False,
+    *,
+    router: AccountRouter | None = None,
+) -> dict[str, Any]:
+    """Inspect or configure multi-account routing strategy, concurrency, and cooldowns."""
+    account_router = router or _default_router()
+    pm = getattr(account_router, "profiles", None)
+    if strategy is not None:
+        account_router.strategy = strategy
+    if max_concurrency is not None and pm is not None and hasattr(pm, "update_config"):
+        pm.update_config(max_concurrency_per_account=max_concurrency)
+    reset_count = 0
+    if reset_cooldowns and hasattr(account_router, "reset_cooldowns"):
+        reset_count = account_router.reset_cooldowns()
+    return {
+        "strategy": getattr(account_router, "strategy", "round-robin"),
+        "max_concurrency_per_account": getattr(account_router, "max_concurrency_per_account", 2),
+        "reset_count": reset_count,
+        "profiles": account_router.get_status(),
+    }
+
+
 def create_mcp_server() -> Any:
     """Create and register the six MCP tools lazily across MCP 1.x/2.x."""
     try:
@@ -222,12 +324,42 @@ def create_mcp_server() -> Any:
     def list_image_models_tool() -> dict[str, Any]:
         return list_image_models()
 
+    async def batch_chat_tool(
+        prompts: list[str],
+        model: str | None = None,
+        system_prompt: str | None = None,
+        max_concurrency: int = 4,
+    ) -> dict[str, Any]:
+        return await batch_chat(prompts, model, system_prompt, max_concurrency)
+
+    async def batch_generate_images_tool(
+        prompts: list[str],
+        model: str | None = None,
+        style: str = "auto",
+        aspect_ratio: str = "auto",
+        image_size: str = "auto",
+        max_concurrency: int = 3,
+    ) -> dict[str, Any]:
+        return await batch_generate_images(
+            prompts, model, style, aspect_ratio, image_size, max_concurrency
+        )
+
+    def configure_pool_tool(
+        strategy: str | None = None,
+        max_concurrency: int | None = None,
+        reset_cooldowns: bool = False,
+    ) -> dict[str, Any]:
+        return configure_pool(strategy, max_concurrency, reset_cooldowns)
+
     server.tool(name="chat")(chat_tool)
     server.tool(name="chat_with_context")(chat_with_context_tool)
     server.tool(name="get_models")(get_models_tool)
     server.tool(name="check_status")(check_status_tool)
     server.tool(name="generate_image")(generate_image_tool)
     server.tool(name="list_image_models")(list_image_models_tool)
+    server.tool(name="batch_chat")(batch_chat_tool)
+    server.tool(name="batch_generate_images")(batch_generate_images_tool)
+    server.tool(name="configure_pool")(configure_pool_tool)
     return server
 
 

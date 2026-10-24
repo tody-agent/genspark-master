@@ -2,21 +2,17 @@
   "name": "genspark",
   "displayName": "Genspark Master Suite",
   "version": "0.5.0",
-  "description": "Browser-token AI powerhouse: 15 flagship chat models (Claude Opus 4.7, GPT-5.4 Pro, o3-pro, Gemini 3.1 Pro), 7 image models (Flux 2 Pro, Nano Banana 2), MCP tools, and OpenAI proxy.",
+  "description": "Multi-Account AI Gateway & Studio: Cross-process account pool (round-robin + least-busy + auto-failover), parallel batch engine (gsk batch / batch_chat / batch_generate_images), 32+ chat models, 7 image models, 9 MCP tools, and OpenAI proxy.",
   "logo": "assets/logo.svg",
   "suggestedPrompts": [
-    "Dùng Genspark chat với mô hình Claude Opus 4.7",
-    "Tạo ảnh phong cách cinematic bằng Flux 2 Pro qua Genspark",
-    "Kiểm tra trạng thái xác thực phiên trình duyệt Genspark"
+    "Dùng Genspark chạy song song batch_chat trên toàn bộ tài khoản với Claude Opus 5.5",
+    "Tạo đồng thời 3 concept ảnh UI bằng Flux 2 Pro qua batch_generate_images",
+    "Kiểm tra trạng thái Multi-Account Pool và cấu hình round-robin bằng gsk pool"
   ],
   "skills": [
+    "skills/genspark",
     "skills/gen-chat",
     "skills/gen-imagegen",
     "skills/gen-setup"
-  ],
-  "mcpServers": {
-    "genspark": {
-      "command": "bin/genspark-mcp"
-    }
-  }
+  ]
 }

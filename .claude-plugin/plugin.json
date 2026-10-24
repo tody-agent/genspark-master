@@ -1,0 +1,15 @@
+{
+  "name": "genspark",
+  "version": "0.5.0",
+  "description": "Genspark Master: multi-account pool with auto-failover, parallel batch (batch_chat / batch_generate_images), 32+ chat models, 7 image models, interactive onboarding menu (gsk), 9 MCP tools.",
+  "author": { "name": "CodyMaster" },
+  "license": "MIT",
+  "keywords": ["genspark", "multi-account", "batch", "mcp", "image-generation"],
+  "skills": "./skills/",
+  "mcpServers": {
+    "genspark": {
+      "command": "${CLAUDE_PLUGIN_ROOT}/scripts/run-mcp.sh",
+      "args": []
+    }
+  }
+}

@@ -137,7 +137,12 @@ class ProfileManager:
         if not self._config:
             self._config = {
                 "default_profile": DEFAULT_PROFILE,
-                "version": "0.3.0",
+                "routing_strategy": "round-robin",
+                "max_concurrency_per_account": 2,
+                "default_model": "claude-opus-5.5",
+                "default_image_model": "nano-banana-2",
+                "default_cooldown_s": 300,
+                "version": "0.5.0",
             }
             self._save_config()
 
@@ -149,7 +154,77 @@ class ProfileManager:
             json.dumps(self._config, indent=2) + "\n",
         )
 
+    def get_config(self) -> dict:
+        """Return a copy of the global configuration."""
+        return {
+            "default_profile": self.default_profile,
+            "routing_strategy": self.routing_strategy,
+            "max_concurrency_per_account": self.max_concurrency,
+            "default_model": self.default_model,
+            "default_image_model": self.default_image_model,
+            "default_cooldown_s": self.default_cooldown_s,
+            "version": self._config.get("version", "0.5.0"),
+        }
+
+    def update_config(self, **kwargs) -> dict:
+        """Update one or more configuration keys and persist."""
+        allowed = {
+            "default_profile",
+            "routing_strategy",
+            "max_concurrency_per_account",
+            "default_model",
+            "default_image_model",
+            "default_cooldown_s",
+        }
+        for key, value in kwargs.items():
+            if key not in allowed or value is None:
+                continue
+            if key == "default_profile":
+                self.default_profile = str(value)
+            elif key == "routing_strategy":
+                val = str(value).lower().strip()
+                if val not in ("round-robin", "least-used", "failover"):
+                    raise ValueError(f"Invalid routing_strategy '{value}'. Choose: round-robin, least-used, failover")
+                self._config["routing_strategy"] = val
+            elif key == "max_concurrency_per_account":
+                self._config["max_concurrency_per_account"] = max(1, int(value))
+            elif key == "default_cooldown_s":
+                self._config["default_cooldown_s"] = max(10, int(value))
+            else:
+                self._config[key] = str(value)
+        self._save_config()
+        return self.get_config()
+
     # ── Profile CRUD ─────────────────────────────────────────────────────
+
+    @property
+    def routing_strategy(self) -> str:
+        """Active multi-account routing strategy."""
+        return self._config.get("routing_strategy", "round-robin")
+
+    @routing_strategy.setter
+    def routing_strategy(self, value: str) -> None:
+        self.update_config(routing_strategy=value)
+
+    @property
+    def max_concurrency(self) -> int:
+        """Max concurrent requests per account."""
+        return int(self._config.get("max_concurrency_per_account", 2))
+
+    @property
+    def default_model(self) -> str:
+        """Default chat model ID."""
+        return self._config.get("default_model", "claude-opus-5.5")
+
+    @property
+    def default_image_model(self) -> str:
+        """Default image model ID."""
+        return self._config.get("default_image_model", "nano-banana-2")
+
+    @property
+    def default_cooldown_s(self) -> int:
+        """Default cooldown duration in seconds."""
+        return int(self._config.get("default_cooldown_s", 300))
 
     @property
     def default_profile(self) -> str:
@@ -258,6 +333,27 @@ class ProfileManager:
 
         session = SessionManager(session_dir=str(profile_dir))
         session.profile_name = name
+        return session
+
+    def import_profile(
+        self,
+        name: str,
+        storage_state: dict,
+        recaptcha_token: Optional[str] = None,
+    ) -> SessionManager:
+        """Create or update a profile directly from a Playwright storage_state dict."""
+        validate_profile_name(name)
+        profile_dir = self._profile_dir(name)
+        ensure_private_directory(profile_dir)
+        session = SessionManager(session_dir=str(profile_dir))
+        session.profile_name = name
+        session.save_storage_state(storage_state)
+        if recaptcha_token:
+            session.save_recaptcha_token(recaptcha_token)
+        log.info(
+            "Imported profile '%s' at %s", name, profile_dir,
+            extra={"event": "profile_imported"},
+        )
         return session
 
     def remove_profile(self, name: str) -> None:

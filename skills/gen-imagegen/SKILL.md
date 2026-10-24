@@ -1,22 +1,22 @@
 ---
 name: gen-imagegen
-description: Generate and download images through the Genspark CLI using its local image-model and style registry. Use when a user asks for Genspark image generation, model/style discovery, aspect-ratio selection, JSON image output, or image-generation troubleshooting. Requires browser-session authentication and does not use a Genspark API key.
+description: Generate and download images through the Genspark CLI (`gsk -i` / `gsk batch --image` / `genspark image generate`) and MCP (`generate_image` / `batch_generate_images`) using its multi-account pool and local image-model/style registry. Use when a user asks for single or parallel batch Genspark image generation, model/style discovery, aspect-ratio selection, or JSON output. Requires browser-session authentication and does not use a Genspark API key.
 ---
 
-# Generate images through Genspark
+# Generate Images through Genspark (Single & Multi-Account Batch)
 
-Free AI image generation powered by 7 top-tier models — Flux 2 Pro, GPT Image 2, Nano Banana Pro, Seedream v5 Lite, Z-Image Turbo, Nano Banana 2, and Flux 2. Features 170+ art styles, 14 aspect ratios, and up to 4K resolution output.
+Free AI image generation powered by 7 top-tier models — Flux 2 Pro, GPT Image 2, Nano Banana Pro, Seedream v5 Lite, Z-Image Turbo, Nano Banana 2, and Flux 2. Features 170+ art styles, 14 aspect ratios, up to 4K resolution output, and concurrent multi-account batch execution.
 
 ## Prerequisites
 
-Confirm the browser session without exposing its contents:
+Confirm the browser session and multi-account pool without exposing credential contents:
 
 ```bash
-genspark doctor --json
-genspark auth status
+gsk doctor --json
+gsk pool status
 ```
 
-If login is missing or expired, ask the user to complete `genspark auth login` in the headed browser flow.
+If login is missing or expired, ask the user to complete `gsk auth login` or add accounts with `gsk pool add <name>`.
 
 ## Available Image Models
 
@@ -35,42 +35,45 @@ If login is missing or expired, ask the user to complete `genspark auth login` i
 Inspect available models and 170+ styles via CLI:
 
 ```bash
-genspark image models --json
-genspark image styles --search "watercolor" --json
+gsk image models --json
+gsk image styles --search "watercolor" --json
 ```
 
-## Generation Examples
-
-Use explicit parameters only when specified by the user:
+## Generation Examples (Shorthand, Standard & Parallel Batch)
 
 ```bash
-# Default generation (uses nano-banana-2)
-genspark image generate "a quiet coastal village at sunrise"
+# Shorthand instant image generation (uses nano-banana-2 and multi-account failover)
+gsk -i "a quiet coastal village at sunrise"
 
 # Specify model, style, aspect ratio, resolution, and output directory
-genspark image generate "editorial fashion portrait of a model" \
+gsk image generate "editorial fashion portrait of a model" \
   --model flux-2-pro \
   --style "Oil Painting" \
   --ratio 3:4 \
   --size 2K \
   --output ./downloads
 
+# Parallel Multi-Account Batch Image Generation (distributes across all accounts simultaneously)
+gsk batch --image \
+  "Concept A: Minimalist macOS dashboard in daylight" \
+  "Concept B: Soft tactile Bento workspace" \
+  "Concept C: Swiss hairline precision UI" \
+  --model flux-2-pro --ratio 16:9 --size 2K --concurrency 3 --output ./concepts
+
 # Generate without downloading (returns URL JSON)
-genspark image generate "minimalist tech logo icon" --no-download --json
+gsk image generate "minimalist tech logo icon" --no-download --json
 ```
 
 ## Parameter Reference
 
-- **`--model`**: One of the 7 supported model IDs (e.g. `flux-2-pro`, `gpt-image-2`).
-- **`--style`**: Style name from `genspark image styles` (e.g. `"Cyberpunk"`, `"Oil Painting"`).
+- **`--model`**: One of the 7 supported model IDs (e.g. `flux-2-pro`, `gpt-image-2`, `nano-banana-2`).
+- **`--style`**: Style name from `gsk image styles` (e.g. `"Cyberpunk"`, `"Oil Painting"`).
 - **`--ratio`**: `auto`, `1:1`, `16:9`, `9:16`, `3:4`, `4:3`, `21:9`, `2:3`, `3:2`, `5:4`, `4:5`, `1:2`, `9:21`.
 - **`--size`**: `auto`, `0.5K`, `1K`, `2K`, `4K`.
-- **`--output`**: Directory where images should be saved (defaults to current working directory).
+- **`--output`**: Directory where images should be saved (or `.json`/`.jsonl` file for `gsk batch --image`).
 - **`--no-download`**: Output generated image URLs as JSON without saving files.
 
-## Error Handling
+## Error Handling & Pool Failover
 
-- **Missing/expired cookies or token**: Run `genspark auth login`.
-- **Rate limit or reCAPTCHA error**: Allow automatic single refresh; prompt headed login if refresh fails.
-- **Upstream error**: Report the result directly without fabricating image paths.
-- **Download error**: Preserve returned URLs and report failed downloads clearly.
+- **Rate limit / Quota exhausted / reCAPTCHA challenge**: Automatically marks the affected account in cooldown and retries on the next healthy account in the pool.
+- **All accounts in cooldown**: Inspect with `gsk pool status`, reset with `gsk pool reset`, or add another account with `gsk pool add <name>`.

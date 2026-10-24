@@ -53,30 +53,88 @@ def get_session(profile: str | None = None) -> SessionManager:
     return pm.get_session(profile)
 
 
-# ── Main Group ───────────────────────────────────────────────────────────
+# ── Main Group (Claude Code / Hermes Style Ergonomics) ──────────────────
 
-@click.group()
+class GensparkGroup(click.Group):
+    """Custom Click Group supporting zero-friction shorthand prompts (`gsk "prompt"`)."""
+
+    def parse_args(self, ctx: click.Context, args: list[str]) -> list[str]:
+        if args and not any(flag in args for flag in ("-h", "--help", "--version")):
+            # Top-level image shorthand: `gsk -i "prompt"` or `gsk --image "prompt"`
+            if args[0] in ("-i", "--image"):
+                rewritten = ["image", "generate", *args[1:]]
+                return super().parse_args(ctx, rewritten)
+
+            # Find first positional token after top-level flags (-v/-q)
+            idx = 0
+            while idx < len(args) and args[idx] in ("-v", "--verbose", "-q", "--quiet"):
+                idx += 1
+
+            if idx < len(args):
+                first_token = args[idx]
+                if not first_token.startswith("-") and first_token not in self.commands:
+                    rewritten = [*args[:idx], "run", *args[idx:]]
+                    return super().parse_args(ctx, rewritten)
+
+        return super().parse_args(ctx, args)
+
+
+@click.group(cls=GensparkGroup, invoke_without_command=True)
 @click.version_option(version=__version__, prog_name="genspark")
 @click.option("--verbose", "-v", is_flag=True, help="Enable verbose logging (DEBUG)")
 @click.option("--quiet", "-q", is_flag=True, help="Suppress all non-error output")
-def main(verbose, quiet):
-    """🚀 Genspark CLI — Free AI Chat Gateway (Multi-Account)
+@click.pass_context
+def main(ctx, verbose, quiet):
+    """⚡ Genspark Agentic CLI — Multi-Account AI Gateway & Studio (gsk)
 
-    Access GPT-5.4, Claude Opus 4.6, Gemini 3.1 Pro, and more
-    via Genspark's free AI Chat interface.
+    Access Claude Opus 5.5, GPT-6 Sol, Gemini 3.8, DeepSeek V4.1, and 7 image
+    models with automatic multi-account round-robin routing and failover.
 
     \b
-    Quick start:
-      1. genspark auth login        # Login via browser (one-time)
-      2. genspark auth add work     # Add another account (optional)
-      3. genspark chat ask "hello"  # Chat with AI
-      4. genspark chat              # Interactive chat mode
-      5. genspark session list      # See conversation history
+    Agentic Shorthands (Claude Code / Hermes style):
+      gsk                           # Launch Interactive Agentic Studio REPL
+      gsk "Explain this code"       # Instant one-shot prompt across account pool
+      gsk -i "A cyberpunk street"   # Instant image generation across account pool
+      gsk pool                      # View multi-account pool health & stats
+      gsk batch tasks.jsonl -c 6    # Run parallel batch across all accounts
+      gsk config                    # Configure default model, strategy & concurrency
     """
     if verbose:
         set_level("DEBUG")
     elif quiet:
         set_level("ERROR")
+
+    if ctx.invoked_subcommand is None:
+        if sys.stdin.isatty() and sys.stdout.isatty() and not os.environ.get("PYTEST_CURRENT_TEST"):
+            from .menu import home_menu
+
+            home_menu(get_profile_manager())
+        else:
+            click.echo(ctx.get_help())
+
+
+@main.command(name="menu")
+def menu_cmd():
+    """📋 Open the interactive home menu."""
+    from .menu import home_menu
+
+    home_menu(get_profile_manager())
+
+
+@main.command(name="accounts")
+def accounts_cmd():
+    """👥 Interactive account manager (add / login / logout / remove)."""
+    from .menu import accounts_menu
+
+    accounts_menu(get_profile_manager())
+
+
+@main.command(name="setup")
+def setup_cmd():
+    """✨ Run the first-time guided onboarding."""
+    from .menu import onboarding
+
+    onboarding(get_profile_manager())
 
 
 @main.command()
@@ -502,17 +560,15 @@ def ask(ctx, prompt, model, stream, json_out, raw, profile):
       genspark chat ask "Hello" --json
     """
     from .client import run_chat
+    from .account_router import AccountRouter
 
     # Use profile from parent group or this option
     profile = profile or (ctx.parent.obj or {}).get("profile")
 
     pm = get_profile_manager()
-    try:
-        from .account_router import AccountRouter
-        router = AccountRouter(pm)
-        session = router.get_session(preferred=profile)
-    except RuntimeError as e:
-        console.print(f"[red]Error:[/] {e}")
+    router = AccountRouter(pm)
+    if router.pool_size == 0:
+        console.print("[red]Error:[/] No accounts configured. Run: genspark auth login")
         sys.exit(1)
 
     # Resolve model name
@@ -522,24 +578,35 @@ def ask(ctx, prompt, model, stream, json_out, raw, profile):
         console.print(f"[red]Error:[/] {e}")
         sys.exit(1)
 
-    if not json_out and not raw:
-        profile_label = f" [dim]({session.profile_name})[/]" if session.profile_name != "default" else ""
-        console.print(f"[dim]Using model: {model_info.display_name}{profile_label}[/]")
-        # Show cookie health warning
-        health = session.check_cookie_health()
-        if health == "missing":
-            console.print("[red]⚠ No session found.[/] Run [cyan]genspark auth login[/] first.")
-            sys.exit(1)
-        elif health == "expired":
-            console.print("[yellow]⚠ Cookies may be expired.[/] Run [cyan]genspark auth login[/] to refresh.")
-        console.print()
+    def _on_failover(failed_prof: str, reason: str, _exc: Exception) -> None:
+        if not json_out and not raw:
+            console.print(
+                f"[yellow]↻ Account '{failed_prof}' unavailable ({reason}) — failing over to next account...[/]"
+            )
 
-    try:
-        result = run_chat(
-            session=session,
+    def _do_ask(active_session: SessionManager):
+        if not json_out and not raw:
+            profile_label = f" [dim]({active_session.profile_name})[/]"
+            console.print(f"[dim]Using model: {model_info.display_name}{profile_label}[/]")
+            health = active_session.check_cookie_health()
+            if health == "missing":
+                console.print("[red]⚠ No session found.[/] Run [cyan]genspark auth login[/] first.")
+                sys.exit(1)
+            elif health == "expired":
+                console.print("[yellow]⚠ Cookies may be expired.[/] Run [cyan]genspark auth login[/] to refresh.")
+            console.print()
+        return run_chat(
+            session=active_session,
             prompt=prompt,
             model=model_info.id,
             stream=stream,
+        )
+
+    try:
+        result = router.run_with_failover(
+            _do_ask,
+            preferred=profile,
+            on_failover=_on_failover,
         )
 
         if json_out:
@@ -745,17 +812,12 @@ def run_command(ctx, prompt, files, model, stream, execute_code, raw, json_out, 
 
     final_prompt = "\n\n".join(full_prompt_parts).strip()
 
-    # 3. Setup Session & Model
+    # 3. Setup Session & Model with Multi-Account Auto-Failover
     from .client import run_chat
     from .account_router import AccountRouter
 
     pm = get_profile_manager()
-    try:
-        router = AccountRouter(pm)
-        session = router.get_session(preferred=profile)
-    except Exception as e:
-        console.print(f"[red]Error:[/] {e}")
-        sys.exit(1)
+    router = AccountRouter(pm)
 
     try:
         model_info = resolve_model(model)
@@ -763,16 +825,28 @@ def run_command(ctx, prompt, files, model, stream, execute_code, raw, json_out, 
         console.print(f"[red]Error:[/] {e}")
         sys.exit(1)
 
-    if not json_out and not raw:
-        profile_label = f" [dim]({session.profile_name})[/]" if session.profile_name != "default" else ""
-        console.print(f"[dim]⚡ Running with {model_info.display_name}{profile_label}...[/]")
+    def _on_run_failover(failed_prof: str, reason: str, _exc: Exception) -> None:
+        if not json_out and not raw:
+            console.print(
+                f"[yellow]↻ Account '{failed_prof}' unavailable ({reason}) — failing over to next account...[/]"
+            )
 
-    try:
-        result = run_chat(
-            session=session,
+    def _do_run(active_session: SessionManager):
+        if not json_out and not raw:
+            profile_label = f" [dim]({active_session.profile_name})[/]"
+            console.print(f"[dim]⚡ Running with {model_info.display_name}{profile_label}...[/]")
+        return run_chat(
+            session=active_session,
             prompt=final_prompt,
             model=model_info.id,
             stream=stream and not json_out and not raw and not execute_code,
+        )
+
+    try:
+        result = router.run_with_failover(
+            _do_run,
+            preferred=profile,
+            on_failover=_on_run_failover,
         )
 
         if json_out:
@@ -1105,13 +1179,16 @@ def info():
         f"  [green]gemini mcp add genspark {mcp_cmd}[/]\n\n"
         "[bold]Cursor / OpenClaw / Cline (JSON config):[/]\n"
         f'  [green]{{"mcpServers": {{"genspark": {{"command": "{mcp_cmd}"}}}}}}[/]\n\n'
-        "[bold]Available MCP Tools:[/]\n"
-        "  • [cyan]chat[/]             — Send message to any AI model\n"
-        "  • [cyan]chat_with_context[/] — Chat with a system prompt\n"
-        "  • [cyan]generate_image[/]   — Generate images with 7 free models\n"
-        "  • [cyan]get_models[/]       — List 14+ free AI models\n"
-        "  • [cyan]list_image_models[/] — List 7 free image models\n"
-        "  • [cyan]check_status[/]     — Check session health",
+        "[bold]Available MCP Tools (9):[/]\n"
+        "  • [cyan]chat[/]                  — Send message to any AI model (with auto-failover)\n"
+        "  • [cyan]chat_with_context[/]     — Chat with a system prompt\n"
+        "  • [cyan]batch_chat[/]            — Run multiple prompts concurrently across account pool\n"
+        "  • [cyan]generate_image[/]        — Generate images with 7 free models\n"
+        "  • [cyan]batch_generate_images[/] — Generate multiple images concurrently across pool\n"
+        "  • [cyan]configure_pool[/]        — Inspect/update routing strategy & reset cooldowns\n"
+        "  • [cyan]get_models[/]            — List 32+ free AI chat models\n"
+        "  • [cyan]list_image_models[/]     — List 7 free image models\n"
+        "  • [cyan]check_status[/]          — Check multi-account session & pool health",
         title="MCP Server",
         border_style="blue",
     ))
@@ -1169,27 +1246,40 @@ def generate(prompt, model, style, ratio, size, output, no_download, no_enhance,
     """
     from .image_client import run_image_generate
     from .image_models import DEFAULT_IMAGE_MODEL, resolve_image_model
+    from .account_router import AccountRouter
 
     pm = get_profile_manager()
-    try:
-        from .account_router import AccountRouter
-        router = AccountRouter(pm)
-        session = router.get_session(preferred=profile)
-    except RuntimeError as e:
-        console.print(f"[red]Error:[/] {e}")
-        sys.exit(1)
+    router = AccountRouter(pm)
 
     # Resolve model
-    model_id = model or DEFAULT_IMAGE_MODEL
+    model_id = model or pm.default_image_model or DEFAULT_IMAGE_MODEL
     try:
         model_info = resolve_image_model(model_id)
     except ValueError as e:
         console.print(f"[red]Error:[/] {e}")
         sys.exit(1)
 
+    def _on_img_failover(failed_prof: str, reason: str, _exc: Exception) -> None:
+        if not json_out:
+            console.print(
+                f"[yellow]↻ Account '{failed_prof}' unavailable ({reason}) — failing over to next account...[/]"
+            )
+
+    def _do_generate(active_session: SessionManager):
+        return run_image_generate(
+            session=active_session,
+            prompt=prompt,
+            model=model_info.id,
+            style=style,
+            aspect_ratio=ratio,
+            image_size=size,
+            auto_prompt=not no_enhance,
+            output_dir=output,
+            download=not no_download,
+        )
+
     if not json_out:
-        profile_label = f" [dim]({session.profile_name})[/]" if session.profile_name != "default" else ""
-        console.print(f"[dim]Model: {model_info.display_name}{profile_label}[/]")
+        console.print(f"[dim]Model: {model_info.display_name} (Pool: {router.available_count}/{router.pool_size} · {router.strategy})[/]")
         if style != "auto":
             console.print(f"[dim]Style: {style}[/]")
         if ratio != "auto":
@@ -1200,16 +1290,10 @@ def generate(prompt, model, style, ratio, size, output, no_download, no_enhance,
 
         with console.status("[bold blue]🎨 Generating image...[/]", spinner="dots"):
             try:
-                result = run_image_generate(
-                    session=session,
-                    prompt=prompt,
-                    model=model_info.id,
-                    style=style,
-                    aspect_ratio=ratio,
-                    image_size=size,
-                    auto_prompt=not no_enhance,
-                    output_dir=output,
-                    download=not no_download,
+                result = router.run_with_failover(
+                    _do_generate,
+                    preferred=profile,
+                    on_failover=_on_img_failover,
                 )
             except GensparkError as e:
                 console.print(f"\n[red]Error:[/] {e}")
@@ -1234,18 +1318,12 @@ def generate(prompt, model, style, ratio, size, output, no_download, no_enhance,
     else:
         # JSON output mode
         try:
-            result = run_image_generate(
-                session=session,
-                prompt=prompt,
-                model=model_info.id,
-                style=style,
-                aspect_ratio=ratio,
-                image_size=size,
-                auto_prompt=not no_enhance,
-                output_dir=output,
-                download=not no_download,
+            result = router.run_with_failover(
+                _do_generate,
+                preferred=profile,
+                on_failover=_on_img_failover,
             )
-        except GensparkError as e:
+        except (GensparkError, RuntimeError) as e:
             click.echo(json.dumps({"error": str(e)}, indent=2))
             sys.exit(1)
 
@@ -1487,6 +1565,569 @@ def integrate_openclaw(port, host, do_apply, set_default):
         console.print()
         console.print("[dim]Run with --apply to write to ~/.openclaw/openclaw.json[/]")
         console.print("[dim]Or copy the JSON above into your openclaw.json manually.[/]")
+
+
+# ── Multi-Account Pool Commands (`gsk pool`) ─────────────────────────────
+
+@main.group(invoke_without_command=True)
+@click.option("--json", "as_json", is_flag=True, help="Emit machine-readable JSON")
+@click.pass_context
+def pool(ctx, as_json):
+    """🔐 Multi-account pool dashboard, routing strategy & health control.
+
+    \b
+    Examples:
+      gsk pool                          # View pool dashboard
+      gsk pool status --json            # JSON pool status
+      gsk pool add acc2 acc3            # Add & login multiple accounts
+      gsk pool strategy round-robin     # Switch routing strategy
+      gsk pool reset                    # Clear cooldown/quota flags
+      gsk pool ping                     # Test all accounts concurrently
+      gsk pool import work state.json   # Import session state file
+    """
+    if ctx.invoked_subcommand is None:
+        ctx.invoke(pool_status, as_json=as_json)
+
+
+@pool.command(name="status")
+@click.option("--json", "as_json", is_flag=True, help="Emit machine-readable JSON")
+def pool_status(as_json):
+    """Show multi-account pool status, routing strategy, and request metrics."""
+    from .account_router import AccountRouter
+    from .interactive import _render_pool_table
+
+    pm = get_profile_manager()
+    router = AccountRouter(pm)
+    statuses = router.get_status()
+
+    if as_json:
+        payload = {
+            "strategy": router.strategy,
+            "max_concurrency_per_account": router.max_concurrency_per_account,
+            "pool_size": router.pool_size,
+            "available_count": router.available_count,
+            "default_profile": pm.default_profile,
+            "accounts": statuses,
+        }
+        click.echo(json.dumps(payload, indent=2, ensure_ascii=False))
+        return
+
+    if not statuses:
+        console.print("[yellow]No accounts in pool.[/] Add one with: [cyan]gsk auth login[/] or [cyan]gsk pool add <name>[/]")
+        return
+
+    console.print(_render_pool_table(router))
+    console.print(
+        f"\n[dim]Strategy: [cyan]{router.strategy}[/] · "
+        f"Available: [green]{router.available_count}/{router.pool_size}[/] · "
+        f"Max concurrency/account: [cyan]{router.max_concurrency_per_account}[/][/]"
+    )
+
+
+@pool.command(name="add")
+@click.argument("names", nargs=-1, required=True)
+def pool_add(names):
+    """Add and login one or more account profiles sequentially."""
+    from .auth import run_login
+
+    pm = get_profile_manager()
+    for name in names:
+        try:
+            session = pm.get_session(name) if pm._profile_exists(name) else pm.add_profile(name)
+        except ValueError as e:
+            console.print(f"[red]Error for '{name}':[/] {e}")
+            continue
+
+        console.print(Panel(
+            f"[bold]🌐 Opening browser to login profile '[cyan]{name}[/]'...[/]\n"
+            "1. Log in with your Genspark account\n"
+            "2. Send ANY message in the chat so reCAPTCHA token is captured",
+            title=f"Pool Add — {name}",
+            border_style="cyan",
+        ))
+        try:
+            if run_login(session):
+                console.print(f"[bold green]✓ Profile '{name}' added to pool![/]\n")
+        except GensparkError as e:
+            console.print(f"[red]Login failed for '{name}':[/] {e}\n")
+
+
+@pool.command(name="strategy")
+@click.argument("mode", type=click.Choice(["round-robin", "least-used", "failover"]))
+def pool_strategy(mode):
+    """Set multi-account routing strategy (round-robin, least-used, failover)."""
+    from .account_router import AccountRouter
+
+    pm = get_profile_manager()
+    router = AccountRouter(pm)
+    router.strategy = mode
+    console.print(f"[green]✓[/] Multi-account routing strategy set to [bold cyan]{mode}[/]")
+
+
+@pool.command(name="reset")
+@click.argument("name", required=False, default=None)
+def pool_reset(name):
+    """Reset cooldown and quota_exhausted state for one or all accounts."""
+    from .account_router import AccountRouter
+
+    pm = get_profile_manager()
+    router = AccountRouter(pm)
+    count = router.reset_cooldowns(name)
+    console.print(f"[green]✓[/] Reset cooldown state for [cyan]{count}[/] account(s). Pool available: {router.available_count}/{router.pool_size}")
+
+
+@pool.command(name="import")
+@click.argument("name")
+@click.argument("state_file", type=click.Path(exists=True))
+@click.option("--token", "-t", default=None, help="Optional reCAPTCHA token string")
+def pool_import(name, state_file, token):
+    """Import a Playwright storage_state.json into a named account profile."""
+    pm = get_profile_manager()
+    try:
+        state_data = json.loads(Path(state_file).read_text(encoding="utf-8"))
+        session = pm.import_profile(name, state_data, recaptcha_token=token)
+        console.print(
+            f"[green]✓[/] Imported profile [cyan]{name}[/] "
+            f"(cookies: {len(session.get_cookies_dict())}, logged_in: {session.is_logged_in})"
+        )
+    except Exception as e:
+        console.print(f"[red]Import failed:[/] {e}")
+        sys.exit(1)
+
+
+@pool.command(name="ping")
+@click.option("--model", "-m", default="glm-5.3-flash", help="Lightweight model for health ping")
+@click.option("--json", "as_json", is_flag=True, help="Emit machine-readable JSON")
+def pool_ping(model, as_json):
+    """Ping all logged-in accounts concurrently to verify live readiness."""
+    import asyncio
+    import time as _time
+    from .account_router import AccountRouter
+    from .client import GensparkClient
+
+    pm = get_profile_manager()
+    router = AccountRouter(pm)
+    profiles = [p for p in pm.list_profiles() if p["is_logged_in"]]
+
+    if not profiles:
+        if as_json:
+            click.echo(json.dumps({"results": []}, indent=2))
+        else:
+            console.print("[yellow]No logged-in accounts to ping.[/]")
+        return
+
+    async def _ping_all():
+        async def _ping_one(prof_name: str) -> dict:
+            t0 = _time.monotonic()
+            sess = pm.get_session(prof_name)
+            try:
+                async with GensparkClient(sess, model=model, timeout=30.0) as client:
+                    resp = await client.chat("Reply with the single word OK.", model=model)
+                router.mark_success(prof_name)
+                return {
+                    "profile": prof_name,
+                    "status": "ok",
+                    "latency_s": round(_time.monotonic() - t0, 2),
+                    "reply": resp.content.strip()[:40],
+                }
+            except Exception as exc:
+                reason = f"{type(exc).__name__}: {exc}".splitlines()[0][:80]
+                router.mark_unhealthy(prof_name, reason=reason)
+                return {
+                    "profile": prof_name,
+                    "status": "error",
+                    "latency_s": round(_time.monotonic() - t0, 2),
+                    "error": reason,
+                }
+
+        return list(await asyncio.gather(*(_ping_one(p["name"]) for p in profiles)))
+
+    results = asyncio.run(_ping_all())
+    if as_json:
+        click.echo(json.dumps({"results": results}, indent=2, ensure_ascii=False))
+        return
+
+    table = Table(title="📡 Multi-Account Live Ping", header_style="bold cyan")
+    table.add_column("Profile", style="bold")
+    table.add_column("Status", justify="center")
+    table.add_column("Latency", justify="right")
+    table.add_column("Detail")
+    for r in results:
+        badge = "[green]● OK[/]" if r["status"] == "ok" else "[red]✗ FAIL[/]"
+        detail = r.get("reply") if r["status"] == "ok" else r.get("error", "")
+        table.add_row(r["profile"], badge, f"{r['latency_s']}s", str(detail))
+    console.print(table)
+
+
+# ── Parallel Batch Command (`gsk batch`) ─────────────────────────────────
+
+@main.command(name="batch")
+@click.argument("prompts", nargs=-1)
+@click.option("--input-file", "-f", type=click.Path(exists=True), default=None,
+              help="Load prompts from .jsonl, .json, or .txt file")
+@click.option("--output", "-o", type=click.Path(), default=None,
+              help="Write results to .jsonl/.json file (or output dir for images)")
+@click.option("--model", "-m", default=None, help="Model ID for chat or image batch")
+@click.option("--system", "-s", "system_prompt", default=None, help="System prompt for chat batch")
+@click.option("--concurrency", "-c", type=int, default=None,
+              help="Max concurrent tasks across the account pool")
+@click.option("--image", "is_image", is_flag=True, default=False,
+              help="Run batch image generation instead of chat")
+@click.option("--style", default="auto", help="Image style (when --image is set)")
+@click.option("--ratio", default="auto", help="Image aspect ratio (when --image is set)")
+@click.option("--size", default="auto", help="Image resolution size (when --image is set)")
+@click.option("--no-download", is_flag=True, default=False,
+              help="Do not download batch images locally")
+@click.option("--json", "as_json", is_flag=True, default=False,
+              help="Emit batch summary and results as JSON")
+def batch_cmd(
+    prompts,
+    input_file,
+    output,
+    model,
+    system_prompt,
+    concurrency,
+    is_image,
+    style,
+    ratio,
+    size,
+    no_download,
+    as_json,
+):
+    """⚡ Run multiple chat or image tasks in parallel across all accounts.
+
+    \b
+    Examples:
+      gsk batch "Summarize X" "Summarize Y" "Summarize Z" -c 3
+      gsk batch -f tasks.jsonl -o results.jsonl --concurrency 6
+      gsk batch --image "Logo concept A" "Logo concept B" -m flux-2-pro -o ./out
+    """
+    import asyncio
+    from .account_router import AccountRouter
+    from .batch import BatchTask, MultiAccountBatchExecutor, load_tasks_from_file
+
+    pm = get_profile_manager()
+    router = AccountRouter(pm)
+
+    tasks: list[BatchTask] = []
+    if input_file:
+        tasks.extend(
+            load_tasks_from_file(
+                Path(input_file),
+                default_model=model,
+                system_prompt=system_prompt,
+            )
+        )
+    for idx, p in enumerate(prompts, len(tasks) + 1):
+        tasks.append(
+            BatchTask(
+                id=f"task-{idx}",
+                prompt=p,
+                model=model,
+                system_prompt=system_prompt,
+            )
+        )
+
+    if not tasks:
+        console.print("[red]Error:[/] Provide inline prompts or --input-file <path>.")
+        sys.exit(1)
+
+    executor = MultiAccountBatchExecutor(router=router)
+
+    if not as_json:
+        mode_str = "Image Generation" if is_image else "Chat"
+        console.print(
+            f"[bold cyan]⚡ Starting Parallel {mode_str} Batch:[/] "
+            f"{len(tasks)} task(s) across {router.available_count}/{router.pool_size} account(s) "
+            f"[dim](strategy: {router.strategy})[/]"
+        )
+
+    def _progress(res, done: int, total: int) -> None:
+        if not as_json:
+            icon = "[green]✓[/]" if res.status == "ok" else "[red]✗[/]"
+            console.print(
+                f"  {icon} [{done}/{total}] [bold]{res.id}[/] via [cyan]{res.profile or '-'}[/] "
+                f"({res.elapsed_s}s, attempts: {res.attempts})"
+            )
+
+    if is_image:
+        out_dir = output if output and not output.endswith((".json", ".jsonl")) else None
+        results = asyncio.run(
+            executor.execute_image_batch(
+                tasks,
+                concurrency=concurrency,
+                style=style,
+                aspect_ratio=ratio,
+                image_size=size,
+                output_dir=out_dir,
+                download=not no_download,
+                on_progress=_progress,
+            )
+        )
+    else:
+        results = asyncio.run(
+            executor.execute_chat_batch(
+                tasks,
+                concurrency=concurrency,
+                on_progress=_progress,
+            )
+        )
+
+    succeeded = sum(1 for r in results if r.status == "ok")
+    summary_payload = {
+        "total": len(results),
+        "succeeded": succeeded,
+        "failed": len(results) - succeeded,
+        "strategy": router.strategy,
+        "results": [r.to_dict() for r in results],
+    }
+
+    if output and (not is_image or output.endswith((".json", ".jsonl"))):
+        out_path = Path(output)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        if out_path.suffix.lower() == ".json":
+            out_path.write_text(json.dumps(summary_payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        else:
+            lines = [json.dumps(r.to_dict(), ensure_ascii=False) for r in results]
+            out_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        if not as_json:
+            console.print(f"\n[green]📁 Saved batch output to {out_path}[/]")
+
+    if as_json:
+        click.echo(json.dumps(summary_payload, indent=2, ensure_ascii=False))
+    else:
+        console.print(
+            f"\n[bold green]✓ Batch complete:[/] {succeeded}/{len(results)} succeeded."
+        )
+        if not is_image and not output:
+            for r in results:
+                if r.status == "ok":
+                    console.print(Panel(
+                        Markdown(r.content),
+                        title=f"[bold]{r.id}[/] · [cyan]{r.profile}[/] · {r.elapsed_s}s",
+                        border_style="green",
+                    ))
+                else:
+                    console.print(f"[red]✗ {r.id}:[/] {r.error}")
+
+
+# ── Configuration Commands (`gsk config`) ────────────────────────────────
+
+CONFIG_KEY_ALIASES = {
+    "profile": "default_profile",
+    "default_profile": "default_profile",
+    "strategy": "routing_strategy",
+    "routing_strategy": "routing_strategy",
+    "concurrency": "max_concurrency_per_account",
+    "max_concurrency": "max_concurrency_per_account",
+    "max_concurrency_per_account": "max_concurrency_per_account",
+    "model": "default_model",
+    "default_model": "default_model",
+    "image-model": "default_image_model",
+    "image_model": "default_image_model",
+    "default_image_model": "default_image_model",
+    "cooldown": "default_cooldown_s",
+    "default_cooldown_s": "default_cooldown_s",
+}
+
+
+@main.group(name="config", invoke_without_command=True)
+@click.option("--json", "as_json", is_flag=True, help="Emit machine-readable JSON")
+@click.option("--interactive", "-i", is_flag=True, help="Launch interactive configuration wizard")
+@click.pass_context
+def config_group(ctx, as_json, interactive):
+    """⚙️ Configure default models, multi-account routing strategy & concurrency.
+
+    \b
+    Examples:
+      gsk config                                # Show current config
+      gsk config -i                             # Launch interactive wizard
+      gsk config wizard                         # Launch interactive wizard
+      gsk config show --json                    # Output config as JSON
+      gsk config set strategy round-robin       # Set routing strategy
+      gsk config set concurrency 4              # Set max parallel requests/account
+      gsk config set model claude-opus-5.5      # Set default chat model
+      gsk config set image-model flux-2-pro     # Set default image model
+    """
+    if ctx.invoked_subcommand is None:
+        if interactive:
+            ctx.invoke(config_wizard)
+        else:
+            ctx.invoke(config_show, as_json=as_json)
+
+
+@config_group.command(name="wizard")
+def config_wizard():
+    """Interactive step-by-step configuration wizard (Claude Code / Hermes style)."""
+    from .image_models import list_image_models, resolve_image_model
+
+    pm = get_profile_manager()
+    cfg = pm.get_config()
+
+    console.print(Panel(
+        "[bold cyan]✨ Genspark Studio Configuration Wizard[/]\n"
+        "[dim]Press Enter at any prompt to keep the current value.[/]",
+        border_style="cyan",
+    ))
+
+    # 1. Routing Strategy
+    strategies = ["round-robin", "least-used", "failover"]
+    console.print("\n[bold]1. Multi-Account Routing Strategy:[/]")
+    console.print("   [cyan]1[/] · [bold]round-robin[/] (Recommended — rotates across healthy accounts + least-busy)")
+    console.print("   [cyan]2[/] · [bold]least-used[/]  (Picks account with lowest total request count & active load)")
+    console.print("   [cyan]3[/] · [bold]failover[/]    (Sticks to primary account, fails over on quota/429)")
+    strat_choice = click.prompt(
+        "   Select strategy (1-3 or name)",
+        default=str(cfg.get("routing_strategy", "round-robin")),
+        show_default=True,
+    ).strip()
+    if strat_choice in {"1", "2", "3"}:
+        new_strategy = strategies[int(strat_choice) - 1]
+    elif strat_choice in strategies:
+        new_strategy = strat_choice
+    else:
+        new_strategy = cfg.get("routing_strategy", "round-robin")
+
+    # 2. Max Concurrency per Account
+    console.print("\n[bold]2. Max Parallel Requests per Account:[/]")
+    new_conc = click.prompt(
+        "   Concurrency per account (1-16)",
+        default=int(cfg.get("max_concurrency_per_account", 2)),
+        type=int,
+        show_default=True,
+    )
+
+    # 3. Default Chat Model
+    recommended_chat = [
+        "claude-opus-5.5",
+        "claude-opus-4-7",
+        "gpt-6-sol",
+        "gemini-3.8-flash",
+        "deepseek-v4.1-flash",
+        "glm-5.3-flash",
+    ]
+    console.print("\n[bold]3. Default Chat Model:[/]")
+    for idx, mid in enumerate(recommended_chat, 1):
+        console.print(f"   [cyan]{idx}[/] · {mid}")
+    chat_choice = click.prompt(
+        "   Select model (1-6 or any model ID)",
+        default=str(cfg.get("default_model", DEFAULT_MODEL)),
+        show_default=True,
+    ).strip()
+    if chat_choice.isdigit() and 1 <= int(chat_choice) <= len(recommended_chat):
+        new_model = recommended_chat[int(chat_choice) - 1]
+    else:
+        try:
+            new_model = resolve_model(chat_choice).id
+        except ValueError:
+            new_model = cfg.get("default_model", DEFAULT_MODEL)
+
+    # 4. Default Image Model
+    img_models = [m.id for m in list_image_models()]
+    console.print("\n[bold]4. Default Image Generation Model:[/]")
+    for idx, mid in enumerate(img_models, 1):
+        console.print(f"   [cyan]{idx}[/] · {mid}")
+    img_choice = click.prompt(
+        f"   Select image model (1-{len(img_models)} or model ID)",
+        default=str(cfg.get("default_image_model", "nano-banana-2")),
+        show_default=True,
+    ).strip()
+    if img_choice.isdigit() and 1 <= int(img_choice) <= len(img_models):
+        new_img_model = img_models[int(img_choice) - 1]
+    else:
+        try:
+            new_img_model = resolve_image_model(img_choice).id
+        except ValueError:
+            new_img_model = cfg.get("default_image_model", "nano-banana-2")
+
+    updated = pm.update_config(
+        routing_strategy=new_strategy,
+        max_concurrency_per_account=max(1, min(32, new_conc)),
+        default_model=new_model,
+        default_image_model=new_img_model,
+    )
+    console.print(
+        f"\n[bold green]✓ Configuration saved![/] "
+        f"(strategy=[cyan]{updated['routing_strategy']}[/], "
+        f"concurrency=[cyan]{updated['max_concurrency_per_account']}[/], "
+        f"model=[cyan]{updated['default_model']}[/], "
+        f"image=[cyan]{updated['default_image_model']}[/])"
+    )
+
+
+@config_group.command(name="show")
+@click.option("--json", "as_json", is_flag=True, help="Emit machine-readable JSON")
+def config_show(as_json):
+    """Display current global configuration."""
+    pm = get_profile_manager()
+    cfg = pm.get_config()
+    if as_json:
+        click.echo(json.dumps(cfg, indent=2, ensure_ascii=False))
+        return
+
+    table = Table(title="⚙️ Genspark CLI Configuration", header_style="bold cyan")
+    table.add_column("Key", style="green")
+    table.add_column("Alias", style="dim")
+    table.add_column("Value", style="bold white")
+    alias_display = {
+        "default_profile": "profile",
+        "routing_strategy": "strategy",
+        "max_concurrency_per_account": "concurrency",
+        "default_model": "model",
+        "default_image_model": "image-model",
+        "default_cooldown_s": "cooldown",
+    }
+    for k, v in cfg.items():
+        if k == "version":
+            continue
+        table.add_row(k, alias_display.get(k, k), str(v))
+    console.print(table)
+    console.print(
+        "\n[dim]Change any setting with: [cyan]gsk config set <alias> <value>[/] "
+        "(e.g. gsk config set strategy round-robin)[/]"
+    )
+
+
+@config_group.command(name="set")
+@click.argument("key")
+@click.argument("value")
+def config_set(key, value):
+    """Set a configuration value (strategy, concurrency, model, image-model, profile, cooldown)."""
+    from .image_models import resolve_image_model
+
+    pm = get_profile_manager()
+    mapped = CONFIG_KEY_ALIASES.get(key.lower().strip())
+    if not mapped:
+        console.print(
+            f"[red]Unknown config key '{key}'.[/] Valid keys: "
+            "strategy, concurrency, model, image-model, profile, cooldown"
+        )
+        sys.exit(1)
+
+    try:
+        if mapped == "default_model":
+            value = resolve_model(value).id
+        elif mapped == "default_image_model":
+            value = resolve_image_model(value).id
+        updated = pm.update_config(**{mapped: value})
+        console.print(f"[green]✓[/] Set [cyan]{mapped}[/] = [bold]{updated[mapped]}[/]")
+    except Exception as e:
+        console.print(f"[red]Error:[/] {e}")
+        sys.exit(1)
+
+
+@config_group.command(name="reset")
+def config_reset():
+    """Reset configuration to recommended defaults."""
+    pm = get_profile_manager()
+    pm.update_config(
+        routing_strategy="round-robin",
+        max_concurrency_per_account=2,
+        default_model=DEFAULT_MODEL,
+        default_image_model="nano-banana-2",
+        default_cooldown_s=300,
+    )
+    console.print("[green]✓[/] Configuration reset to defaults.")
 
 
 # ── Entry Point ──────────────────────────────────────────────────────────

@@ -145,6 +145,22 @@ def parse_sse_stream(raw_text: str) -> Generator[ChatChunk, None, None]:
             # Skip non-content fields (_updatetime, etc.)
             continue
 
+        # ── error event — surface upstream quota/rate-limit errors ──
+        if event_type == "error" or (isinstance(data.get("error"), (str, dict)) and not data.get("content")):
+            err_obj = data.get("error")
+            if isinstance(err_obj, dict):
+                err_msg = err_obj.get("message") or err_obj.get("detail") or json.dumps(err_obj)
+            elif isinstance(err_obj, str) and err_obj:
+                err_msg = err_obj
+            else:
+                err_msg = data.get("message") or data.get("detail") or "Upstream SSE error"
+            yield ChatChunk(
+                content="",
+                event_type="error",
+                raw={"error_message": str(err_msg), **data},
+            )
+            continue
+
         # ── project_end — conversation complete ──
         if event_type == "project_end":
             yield ChatChunk(

@@ -8,7 +8,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_skills_use_canonical_plugin_layout():
-    expected = {"gen-setup", "gen-chat", "gen-imagegen"}
+    expected = {"genspark", "gen-setup", "gen-chat", "gen-imagegen"}
     found = {path.parent.name for path in (ROOT / "skills").glob("*/SKILL.md")}
     assert found == expected
     assert not list((ROOT / "skills").glob("gen-*.md"))

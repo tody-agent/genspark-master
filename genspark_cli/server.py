@@ -221,39 +221,47 @@ async def _handle_non_stream(
     except (RateLimitError, SessionExpiredError, RecaptchaError) as e:
         log.warning("Proxy failover triggered: %s", e, extra={"event": "proxy_failover"})
         pool.mark_unhealthy(client.session.profile_name, reason=type(e).__name__)
-        # Auto-retry with next account
-        try:
-            client = await pool.get_client()
-            result = await client.chat(prompt, model=model)
-            pool.mark_success(client.session.profile_name)
+        # Auto-retry across remaining healthy accounts in the pool
+        max_retries = max(1, pool.router.pool_size - 1)
+        last_err: Exception = e
+        for _ in range(max_retries):
+            try:
+                client = await pool.get_client()
+                result = await client.chat(prompt, model=model)
+                pool.mark_success(client.session.profile_name)
 
-            response = {
-                "id": request_id,
-                "object": "chat.completion",
-                "created": int(time.time()),
-                "model": model,
-                "choices": [
-                    {
-                        "index": 0,
-                        "message": {
-                            "role": "assistant",
-                            "content": result.content,
-                        },
-                        "finish_reason": "stop",
-                    }
-                ],
-                "usage": {
-                    "prompt_tokens": len(prompt.split()),
-                    "completion_tokens": len(result.content.split()),
-                    "total_tokens": len(prompt.split()) + len(result.content.split()),
-                },
-            }
-            return web.json_response(response)
-        except Exception as retry_err:
-            return web.json_response(
-                {"error": {"message": f"All accounts failed: {retry_err}", "type": "server_error"}},
-                status=503,
-            )
+                response = {
+                    "id": request_id,
+                    "object": "chat.completion",
+                    "created": int(time.time()),
+                    "model": model,
+                    "choices": [
+                        {
+                            "index": 0,
+                            "message": {
+                                "role": "assistant",
+                                "content": result.content,
+                            },
+                            "finish_reason": "stop",
+                        }
+                    ],
+                    "usage": {
+                        "prompt_tokens": len(prompt.split()),
+                        "completion_tokens": len(result.content.split()),
+                        "total_tokens": len(prompt.split()) + len(result.content.split()),
+                    },
+                }
+                return web.json_response(response)
+            except (RateLimitError, SessionExpiredError, RecaptchaError) as retry_err:
+                last_err = retry_err
+                pool.mark_unhealthy(client.session.profile_name, reason=type(retry_err).__name__)
+            except Exception as retry_err:
+                last_err = retry_err
+                break
+        return web.json_response(
+            {"error": {"message": f"All accounts failed: {last_err}", "type": "server_error"}},
+            status=503,
+        )
     except GensparkError as e:
         log.error("Proxy error: %s", e, extra={"event": "proxy_error"})
         return web.json_response(
@@ -407,36 +415,50 @@ async def handle_image_generations(request: web.Request) -> web.Response:
         )
 
     from .exceptions import RateLimitError, SessionExpiredError, RecaptchaError
-    try:
-        async with GensparkImageClient(session, model=model_info.id) as img_client:
-            result = await img_client.generate(
-                prompt=prompt,
-                style=style,
-                aspect_ratio=aspect_ratio,
-                image_size=image_size,
+    max_attempts = max(1, pool.router.pool_size)
+    last_err: Optional[Exception] = None
+
+    for attempt in range(max_attempts):
+        if attempt > 0:
+            try:
+                client = await pool.get_client()
+                session = client.session
+            except RuntimeError as e:
+                last_err = e
+                break
+
+        try:
+            async with GensparkImageClient(session, model=model_info.id) as img_client:
+                result = await img_client.generate(
+                    prompt=prompt,
+                    style=style,
+                    aspect_ratio=aspect_ratio,
+                    image_size=image_size,
+                )
+
+            pool.mark_success(session.profile_name)
+
+            response = {
+                "created": int(time.time()),
+                "data": [{"url": url} for url in result.urls],
+            }
+            return web.json_response(response)
+
+        except (RateLimitError, SessionExpiredError, RecaptchaError) as e:
+            last_err = e
+            log.warning("Image proxy failover: %s", e, extra={"event": "image_proxy_failover"})
+            pool.mark_unhealthy(session.profile_name, reason=type(e).__name__)
+        except Exception as e:
+            log.error("Image proxy error: %s", e, exc_info=True)
+            return web.json_response(
+                {"error": {"message": str(e), "type": "server_error"}},
+                status=500,
             )
 
-        pool.mark_success(session.profile_name)
-
-        response = {
-            "created": int(time.time()),
-            "data": [{"url": url} for url in result.urls],
-        }
-        return web.json_response(response)
-
-    except (RateLimitError, SessionExpiredError, RecaptchaError) as e:
-        log.warning("Image proxy failover: %s", e, extra={"event": "image_proxy_failover"})
-        pool.mark_unhealthy(session.profile_name, reason=type(e).__name__)
-        return web.json_response(
-            {"error": {"message": f"Account failover triggered ({type(e).__name__}). Retry.", "type": "server_error"}},
-            status=503,
-        )
-    except Exception as e:
-        log.error("Image proxy error: %s", e, exc_info=True)
-        return web.json_response(
-            {"error": {"message": str(e), "type": "server_error"}},
-            status=500,
-        )
+    return web.json_response(
+        {"error": {"message": f"All accounts failed for image generation: {last_err}", "type": "server_error"}},
+        status=503,
+    )
 
 
 async def handle_health(request: web.Request) -> web.Response:
@@ -447,6 +469,7 @@ async def handle_health(request: web.Request) -> web.Response:
         "status": "ok",
         "version": __version__,
         "backend": "httpx (multi-account)",
+        "routing_strategy": pool.router.strategy,
         "chat_models": len(MODELS),
         "image_models": len(IMAGE_MODELS),
         "accounts_total": pool.router.pool_size,
@@ -455,7 +478,9 @@ async def handle_health(request: web.Request) -> web.Response:
             {
                 "name": s["name"],
                 "health": s["health"],
-                "available": s["is_available"]
+                "available": s["is_available"],
+                "in_flight": s.get("in_flight", 0),
+                "total_requests": s.get("total_requests", 0),
             }
             for s in pool.router.get_status()
         ]

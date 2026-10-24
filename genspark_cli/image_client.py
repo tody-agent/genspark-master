@@ -31,6 +31,7 @@ from .exceptions import (
     AuthenticationError,
     NetworkError,
     ParseError,
+    QuotaExhaustedError,
     RateLimitError,
     RecaptchaError,
     SessionExpiredError,
@@ -300,10 +301,10 @@ class GensparkImageClient:
             )
 
         # Check for credit exhausted
-        if "CREDIT_EXHAUSTED" in raw_text or "used all your credits" in raw_text:
-            raise RateLimitError(
+        if "CREDIT_EXHAUSTED" in raw_text or "used all your credits" in raw_text or "insufficient credit" in raw_text.lower():
+            raise QuotaExhaustedError(
                 "Image generation credit exhausted",
-                status_code=429,
+                status_code=402,
                 body="You've used all your credits for this Genspark account.",
             )
 
@@ -592,6 +593,11 @@ class GensparkImageClient:
         if status in (401, 403):
             raise SessionExpiredError(
                 details=f"HTTP {status}. Cookies may have expired.",
+            )
+        elif status == 402:
+            raise QuotaExhaustedError(
+                status_code=status,
+                body=body_preview,
             )
         elif status == 429:
             raise RateLimitError(

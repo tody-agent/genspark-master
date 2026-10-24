@@ -1,30 +1,17 @@
-"""Interactive REPL chat mode with smart session management.
+"""Interactive Agentic Studio REPL mode (Claude Code / Hermes CLI style).
 
-Provides a live terminal chat experience with:
-  - Multi-account profile display and switching
-  - Conversation tracking with message history
-  - Context health monitoring (turn counting)
-  - Auto-compact suggestions at 7/12/20 turns
-  - Session management (list, new, resume, compact)
-
-Inspired by Claude Code's session management UX.
-
-Usage:
-    $ genspark chat
-    🚀 Genspark AI Chat (claude-opus-4-6) [default]
-    Type /help for commands, /quit to exit
-
-    You: Hello!
-    AI: Hello! How can I help you today?
-
-    You: /compact
-    🔄 Compacting conversation...
-
-    You: /session list
-    📝 Recent sessions...
+Provides a live terminal chat & multi-account studio experience with:
+  - Status HUD displaying Active Model (with multiplier), Account Pool health,
+    Routing Strategy (round-robin / least-used / failover), and Context turns
+  - Readline history (~/.genspark/history) and Tab completion for slash commands
+  - Automatic per-turn multi-account routing & transparent failover on errors
+  - Built-in /pool, /strategy, /config, /reset, /image, /batch, /compact commands
 """
 
+from __future__ import annotations
+
 import asyncio
+from pathlib import Path
 import sys
 from typing import Optional
 
@@ -33,10 +20,18 @@ from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.table import Table
 
+from .account_router import (
+    AccountRouter,
+    ROUTING_ERRORS,
+    VALID_STRATEGIES,
+)
+from .batch import BatchTask, MultiAccountBatchExecutor
 from .client import GensparkClient
 from .context_manager import ContextAdvice, ContextManager
 from .conversations import ConversationStore
-from .exceptions import GensparkError, RateLimitError, RecaptchaError, SessionExpiredError
+from .exceptions import GensparkError
+from .image_client import GensparkImageClient
+from .image_models import DEFAULT_IMAGE_MODEL, resolve_image_model
 from .log import log
 from .models import DEFAULT_MODEL, MODELS, resolve_model
 from .profiles import ProfileManager
@@ -45,31 +40,178 @@ from .session import SessionManager
 
 console = Console()
 
+SLASH_COMMANDS = [
+    "/help",
+    "/quit",
+    "/q",
+    "/exit",
+    "/model",
+    "/models",
+    "/pool",
+    "/accounts",
+    "/login",
+    "/logout",
+    "/menu",
+    "/strategy",
+    "/reset",
+    "/config",
+    "/image",
+    "/batch",
+    "/session",
+    "/rename",
+    "/history",
+    "/compact",
+    "/context",
+    "/status",
+    "/clear",
+    "/raw",
+]
+
 HELP_TEXT = """
-[bold cyan]Chat Commands:[/]
-  [green]/model[/] <name>       Switch AI model (e.g. /model gpt-5.4)
-  [green]/models[/]             List available models
-  [green]/clear[/]              Clear screen
-  [green]/raw[/]                Toggle raw/formatted output
-  [green]/help[/]               Show this help
-  [green]/quit[/] or [green]/q[/]        Exit chat
+[bold cyan]⚡ Studio & Chat Commands:[/]
+  [green]/model[/] <name>           Switch AI chat model (e.g. /model gpt-6-sol)
+  [green]/models[/]                 List available models & credit multipliers
+  [green]/image[/] <prompt>         Generate an image inline using the account pool
+  [green]/batch[/] <p1> | <p2> ...  Run multiple prompts concurrently across all accounts
+  [green]/clear[/]                  Clear terminal screen
+  [green]/raw[/]                    Toggle raw/formatted output
+  [green]/help[/]                   Show this command reference
+  [green]/quit[/] or [green]/q[/]            Exit studio
 
-[bold cyan]Session Commands:[/]
-  [green]/session list[/]       List recent conversations
-  [green]/session new[/] [title] Start a new conversation
-  [green]/session resume[/] <id> Resume a saved conversation
-  [green]/session info[/]       Show current session stats
-  [green]/rename[/] <name>      Name the current conversation
-  [green]/history[/] [n]        Show last N messages (default 10)
+[bold cyan]🔐 Multi-Account Pool & Routing:[/]
+  [green]/accounts[/]               Quản lý tài khoản: thêm / đăng nhập / đăng xuất / xoá  (/login, /logout)
+  [green]/menu[/]                   Thoát khung chat, về menu chính
+  [green]/pool[/]                   Show account pool dashboard, health & request stats
+  [green]/pool reset[/]             Reset all cooldown / quota-exhausted states
+  [green]/strategy[/] <mode>        Set routing strategy: [yellow]round-robin[/] | [yellow]least-used[/] | [yellow]failover[/]
+  [green]/reset[/]                  Shortcut for /pool reset
+  [green]/config[/] [key] [val]     View or update global CLI configuration
 
-[bold cyan]Context Commands:[/]
-  [green]/compact[/] [focus]    Summarize & start fresh (like Claude Code)
-  [green]/context[/]            Show turn count, tokens, health
-
-[bold cyan]Account Commands:[/]
-  [green]/accounts[/]           Show account pool status
-  [green]/status[/]             Show session + account info
+[bold cyan]📝 Session & Context Management:[/]
+  [green]/session list[/]           List recent conversations
+  [green]/session new[/] [title]    Start a fresh conversation thread
+  [green]/session resume[/] <id>    Resume a saved conversation by ID prefix
+  [green]/session info[/]           Show current session stats
+  [green]/rename[/] <name>          Rename the current conversation
+  [green]/history[/] [n]            Show last N messages (default 10)
+  [green]/compact[/] [focus]        Summarize & compact context (like Claude Code)
+  [green]/context[/]                Show turn count, estimated tokens & context health
+  [green]/status[/]                 Show full session + account pool status
 """
+
+
+def _setup_readline(base_dir: Path) -> None:
+    """Configure readline history and slash-command tab completion if available."""
+    try:
+        import readline
+    except ImportError:
+        return
+
+    history_file = base_dir / "history"
+    try:
+        if history_file.exists():
+            readline.read_history_file(str(history_file))
+        readline.set_history_length(500)
+    except OSError:
+        pass
+
+    model_ids = sorted(MODELS.keys())
+
+    def completer(text: str, state: int) -> Optional[str]:
+        line = readline.get_line_buffer().lstrip()
+        options: list[str] = []
+        if line.startswith("/model "):
+            prefix = line[len("/model "):].strip()
+            options = [m for m in model_ids if m.startswith(prefix)]
+        elif line.startswith("/strategy "):
+            prefix = line[len("/strategy "):].strip()
+            options = [s for s in sorted(VALID_STRATEGIES) if s.startswith(prefix)]
+        elif line.startswith("/"):
+            options = [cmd for cmd in SLASH_COMMANDS if cmd.startswith(line)]
+        if state < len(options):
+            return options[state]
+        return None
+
+    try:
+        readline.set_completer(completer)
+        if "libedit" in (getattr(readline, "__doc__", "") or ""):
+            readline.parse_and_bind("bind ^I rl_complete")
+        else:
+            readline.parse_and_bind("tab: complete")
+    except Exception:
+        pass
+
+
+def _save_readline_history(base_dir: Path) -> None:
+    try:
+        import readline
+        history_file = base_dir / "history"
+        readline.write_history_file(str(history_file))
+    except Exception:
+        pass
+
+
+def _render_pool_table(router: AccountRouter) -> Table:
+    statuses = router.get_status()
+    table = Table(
+        title=f"🔐 Multi-Account Pool (strategy: {router.strategy})",
+        show_header=True,
+        header_style="bold cyan",
+    )
+    table.add_column("Profile", style="bold")
+    table.add_column("Health", justify="center")
+    table.add_column("In-Flight", justify="right")
+    table.add_column("Requests", justify="right")
+    table.add_column("Success/Fail", justify="right")
+    table.add_column("Notes", style="dim")
+
+    badges = {
+        "healthy": "[green]● healthy[/]",
+        "cooldown": "[yellow]◐ cooldown[/]",
+        "quota_exhausted": "[red]⊘ quota_exhausted[/]",
+        "expired": "[red]✗ expired[/]",
+        "needs_login": "[dim]○ needs_login[/]",
+    }
+    for s in statuses:
+        default_mark = " [yellow]★[/]" if s.get("is_default") else ""
+        badge = badges.get(s["health"], s["health"])
+        notes = []
+        if s.get("cooldown_remaining_s"):
+            notes.append(f"{s['cooldown_remaining_s']}s left")
+        if s.get("failure_reason"):
+            notes.append(str(s["failure_reason"])[:50])
+        table.add_row(
+            f"{s['name']}{default_mark}",
+            badge,
+            str(s.get("in_flight", 0)),
+            str(s.get("total_requests", 0)),
+            f"{s.get('success_count', 0)}/{s.get('failure_count', 0)}",
+            " · ".join(notes) if notes else "ready",
+        )
+    return table
+
+
+def _render_hud_header(
+    model_info,
+    router: AccountRouter,
+    current_profile: str,
+    conv_id: str,
+    turns: int = 0,
+) -> Panel:
+    avail = router.available_count
+    total = router.pool_size
+    pool_color = "green" if avail > 0 else "red"
+    mult_str = f"{model_info.multiplier}×"
+    return Panel(
+        f"[bold cyan]⚡ Genspark Agentic Studio[/]  [dim]│[/]  "
+        f"Model: [bold white]{model_info.display_name}[/] [magenta]({mult_str})[/]  [dim]│[/]  "
+        f"Pool: [{pool_color}]{avail}/{total} healthy[/] [dim]({router.strategy})[/]  [dim]│[/]  "
+        f"Active: [cyan]{current_profile}[/]\n"
+        f"[dim]Session {conv_id[:10]} · Turns: {turns} · "
+        f"Commands: /pool  /strategy  /model  /image  /batch  /config  /compact  /help  /quit[/]",
+        border_style="cyan",
+        padding=(0, 1),
+    )
 
 
 async def interactive_chat(
@@ -78,14 +220,16 @@ async def interactive_chat(
     profile_manager: Optional[ProfileManager] = None,
     profile_name: Optional[str] = None,
 ) -> None:
-    """Run the interactive REPL chat loop with smart session management."""
-
-    current_model = model
-    raw_mode = False
+    """Run the interactive Agentic Studio REPL loop with multi-account auto-routing."""
     pm = profile_manager or ProfileManager()
+    router = AccountRouter(pm)
+    current_model = model or pm.default_model
+    raw_mode = False
+    preferred_profile = profile_name
     current_profile = profile_name or session.profile_name
 
-    # Initialize stores
+    _setup_readline(pm.base_dir)
+
     store = ConversationStore()
     ctx_mgr = ContextManager()
 
@@ -95,46 +239,32 @@ async def interactive_chat(
         model_info = resolve_model(DEFAULT_MODEL)
         current_model = DEFAULT_MODEL
 
-    # Create a new conversation
     conversation = store.create(
         model=model_info.id,
         profile=current_profile,
     )
     current_conv_id = conversation.id
 
-    profile_label = f" [{current_profile}]" if current_profile != "default" else ""
-    console.print(Panel(
-        f"[bold]🚀 Genspark AI Chat[/] — [cyan]{model_info.display_name}[/]{profile_label}\n"
-        f"Type [green]/help[/] for commands, [green]/quit[/] to exit\n"
-        f"[dim]Session: {conversation.id[:12]}... | /compact at 7+ turns[/]",
-        border_style="blue",
-    ))
+    console.print(_render_hud_header(model_info, router, current_profile, current_conv_id, 0))
 
-    # Check cookie health
     health = session.check_cookie_health()
-    if health == "missing":
-        console.print("[red]⚠ No session found.[/] Run [cyan]genspark auth login[/] first.")
+    if health == "missing" and router.available_count == 0:
+        console.print(
+            "[red]⚠ No logged-in account found.[/] Run [cyan]gsk auth login[/] or [cyan]gsk pool add <name>[/] first."
+        )
         return
     elif health == "expired":
-        console.print("[yellow]⚠ Session may be expired.[/] Run [cyan]genspark auth login[/] to refresh.")
-    elif health == "aging":
-        console.print("[yellow]ℹ Session is aging.[/] Consider running [cyan]genspark auth login[/] soon.")
+        console.print("[yellow]⚠ Default session cookies may be expired.[/] Pool will auto-route to healthy accounts.")
 
-    # Show account pool status
     try:
-        from .account_router import AccountRouter
-        router = AccountRouter(pm)
-        if router.pool_size > 1:
-            console.print(f"[dim]Account pool: {router.available_count}/{router.pool_size} available[/]")
-    except Exception:
-        router = None
-
-    async with GensparkClient(session, model=current_model) as client:
         while True:
+            avail = router.available_count
+            total = router.pool_size
+            prompt_prefix = f"\n\033[1;36m[{current_profile} · {avail}/{total}]\033[0m \033[1;32m❯\033[0m "
             try:
                 prompt = await asyncio.get_event_loop().run_in_executor(
                     None,
-                    lambda: input("\n\033[1;32mYou:\033[0m "),
+                    lambda: input(prompt_prefix),
                 )
             except (EOFError, KeyboardInterrupt):
                 console.print("\n[dim]Goodbye![/]")
@@ -153,39 +283,180 @@ async def interactive_chat(
                     console.print("[dim]Goodbye![/]")
                     break
 
+                elif cmd == "/menu":
+                    break
+
+                elif cmd in ("/accounts", "/login", "/logout"):
+                    from .menu import accounts_menu
+
+                    accounts_menu(profile_manager or ProfileManager())
+                    continue
+
                 elif cmd == "/help":
                     console.print(HELP_TEXT)
                     continue
 
-                elif cmd == "/model" and len(cmd_parts) > 1:
-                    new_model = cmd_parts[1].strip()
-                    try:
-                        model_info = resolve_model(new_model)
-                        current_model = model_info.id
-                        client.model = current_model
-                        console.print(f"[green]✓[/] Switched to [cyan]{model_info.display_name}[/]")
-                    except ValueError as e:
-                        console.print(f"[red]✗[/] {e}")
+                elif cmd == "/model":
+                    if len(cmd_parts) > 1:
+                        new_model = cmd_parts[1].strip()
+                        try:
+                            model_info = resolve_model(new_model)
+                            current_model = model_info.id
+                            pm.update_config(default_model=current_model)
+                            console.print(
+                                f"[green]✓[/] Switched to [cyan]{model_info.display_name}[/] "
+                                f"[magenta]({model_info.multiplier}×)[/]"
+                            )
+                        except ValueError as e:
+                            console.print(f"[red]✗[/] {e}")
+                    else:
+                        console.print(
+                            f"Current model: [cyan]{model_info.display_name}[/] ({current_model}, {model_info.multiplier}×)\n"
+                            f"[dim]Usage: /model <model-id>[/]"
+                        )
                     continue
 
                 elif cmd == "/models":
+                    table = Table(title="🤖 Available Chat Models", header_style="bold cyan")
+                    table.add_column("ID", style="green")
+                    table.add_column("Name")
+                    table.add_column("Tier", style="yellow")
+                    table.add_column("Cost", justify="right", style="magenta")
                     for mid, minfo in sorted(MODELS.items()):
-                        marker = " ★" if mid == current_model else ""
-                        console.print(f"  [green]{mid}[/] — {minfo.display_name}{marker}")
+                        marker = " ★" if mid == current_model else (" 🔥" if minfo.is_recommended else "")
+                        table.add_row(mid, minfo.display_name + marker, minfo.tier, f"{minfo.multiplier}×")
+                    console.print(table)
+                    continue
+
+                elif cmd == "/pool":
+                    sub = cmd_parts[1].lower().strip() if len(cmd_parts) > 1 else "status"
+                    if sub == "reset":
+                        count = router.reset_cooldowns()
+                        console.print(f"[green]✓[/] Reset cooldown state for {count} account(s).")
+                    console.print(_render_pool_table(router))
+                    continue
+
+                elif cmd == "/reset":
+                    count = router.reset_cooldowns()
+                    console.print(f"[green]✓[/] Reset cooldown state for {count} account(s).")
+                    continue
+
+                elif cmd == "/strategy":
+                    if len(cmd_parts) > 1:
+                        new_strat = cmd_parts[1].strip().lower()
+                        try:
+                            router.strategy = new_strat
+                            console.print(f"[green]✓[/] Routing strategy set to [cyan]{router.strategy}[/]")
+                        except ValueError as e:
+                            console.print(f"[red]✗[/] {e}")
+                    else:
+                        console.print(
+                            f"Current strategy: [cyan]{router.strategy}[/]\n"
+                            f"[dim]Options: round-robin | least-used | failover[/]"
+                        )
+                    continue
+
+                elif cmd == "/config":
+                    if len(cmd_parts) == 1:
+                        cfg = pm.get_config()
+                        table = Table(title="⚙️ Genspark Configuration", header_style="bold cyan")
+                        table.add_column("Setting", style="green")
+                        table.add_column("Value", style="white")
+                        for k, v in cfg.items():
+                            table.add_row(k, str(v))
+                        console.print(table)
+                        console.print("[dim]Update with: /config <strategy|concurrency|model|image_model> <value>[/]")
+                    elif len(cmd_parts) >= 3:
+                        key = cmd_parts[1].strip().lower()
+                        val = cmd_parts[2].strip()
+                        key_map = {
+                            "strategy": "routing_strategy",
+                            "routing_strategy": "routing_strategy",
+                            "concurrency": "max_concurrency_per_account",
+                            "max_concurrency": "max_concurrency_per_account",
+                            "model": "default_model",
+                            "default_model": "default_model",
+                            "image_model": "default_image_model",
+                            "default_image_model": "default_image_model",
+                            "cooldown": "default_cooldown_s",
+                        }
+                        mapped = key_map.get(key)
+                        if not mapped:
+                            console.print(f"[red]Unknown config key:[/] {key}")
+                        else:
+                            try:
+                                pm.update_config(**{mapped: val})
+                                if mapped == "default_model":
+                                    model_info = resolve_model(val)
+                                    current_model = model_info.id
+                                console.print(f"[green]✓[/] Updated [cyan]{mapped}[/] = [bold]{val}[/]")
+                            except Exception as e:
+                                console.print(f"[red]✗[/] {e}")
+                    else:
+                        console.print("[yellow]Usage:[/] /config [key] [value]")
+                    continue
+
+                elif cmd == "/image":
+                    img_prompt = " ".join(cmd_parts[1:]).strip()
+                    if not img_prompt:
+                        console.print("[yellow]Usage:[/] /image <prompt>")
+                        continue
+                    img_model = resolve_image_model(pm.default_image_model)
+                    console.print(f"[dim]🎨 Generating image with {img_model.display_name} via account pool...[/]")
+                    try:
+                        async def _gen_op(sess: SessionManager):
+                            async with GensparkImageClient(sess, model=img_model.id) as iclient:
+                                res = await iclient.generate(img_prompt, model=img_model.id)
+                                if res.has_images:
+                                    await iclient.download_images(res)
+                                return res, sess.profile_name
+
+                        img_res, used_prof = await router.execute_with_failover(_gen_op)
+                        current_profile = used_prof
+                        console.print(f"[green]✓ Image generated via [{used_prof}]![/]")
+                        for u in img_res.urls:
+                            console.print(f"  [cyan]URL:[/] {u}")
+                        for p in img_res.local_paths:
+                            console.print(f"  [green]Saved:[/] {p}")
+                    except Exception as e:
+                        console.print(f"[red]Image generation failed:[/] {e}")
+                    continue
+
+                elif cmd == "/batch":
+                    raw_batch = " ".join(cmd_parts[1:]).strip()
+                    if not raw_batch:
+                        console.print("[yellow]Usage:[/] /batch <prompt 1> | <prompt 2> | <prompt 3>")
+                        continue
+                    prompts = [p.strip() for p in raw_batch.split("|") if p.strip()]
+                    tasks = [BatchTask(id=f"b-{i}", prompt=p, model=current_model) for i, p in enumerate(prompts, 1)]
+                    console.print(
+                        f"[bold cyan]⚡ Running {len(tasks)} tasks in parallel across {router.available_count} account(s)...[/]"
+                    )
+                    executor = MultiAccountBatchExecutor(router=router)
+                    results = await executor.execute_chat_batch(tasks)
+                    for r in results:
+                        if r.status == "ok":
+                            console.print(Panel(
+                                Markdown(r.content),
+                                title=f"[green]✓ {r.id}[/] · [cyan]{r.profile}[/] · {r.elapsed_s}s",
+                                border_style="green",
+                            ))
+                        else:
+                            console.print(f"[red]✗ {r.id} ({r.profile}):[/] {r.error}")
                     continue
 
                 elif cmd == "/status":
-                    console.print(f"  Model: [cyan]{model_info.display_name}[/]")
-                    console.print(f"  Profile: [cyan]{current_profile}[/]")
-                    console.print(f"  Session: {session}")
-                    console.print(f"  Cookie health: {session.check_cookie_health()}")
                     conv = store.get(current_conv_id)
-                    if conv:
-                        console.print(f"  Turns: {conv.user_turn_count}")
+                    turns = conv.user_turn_count if conv else 0
+                    console.print(_render_hud_header(model_info, router, current_profile, current_conv_id, turns))
+                    console.print(_render_pool_table(router))
                     continue
 
                 elif cmd == "/clear":
                     console.clear()
+                    conv = store.get(current_conv_id)
+                    turns = conv.user_turn_count if conv else 0
+                    console.print(_render_hud_header(model_info, router, current_profile, current_conv_id, turns))
                     continue
 
                 elif cmd == "/raw":
@@ -204,7 +475,7 @@ async def interactive_chat(
                             console.print("[dim]No saved conversations.[/]")
                         else:
                             console.print("[bold]📝 Recent Sessions:[/]")
-                            for i, entry in enumerate(recent):
+                            for entry in recent:
                                 cid = entry.get("id", "")
                                 display = entry.get("display_name", "unnamed")
                                 turns = entry.get("turn_count", 0)
@@ -218,7 +489,6 @@ async def interactive_chat(
                         continue
 
                     elif subcmd == "new":
-                        # Start new conversation (optionally with a title)
                         title = cmd_parts[2].strip() if len(cmd_parts) > 2 else None
                         conversation = store.create(
                             model=current_model,
@@ -234,7 +504,6 @@ async def interactive_chat(
 
                     elif subcmd == "resume" and len(cmd_parts) > 2:
                         target_id = cmd_parts[2].strip()
-                        # Partial match
                         found = None
                         for entry in store.list_all():
                             if entry.get("id", "").startswith(target_id):
@@ -244,7 +513,6 @@ async def interactive_chat(
                             conversation = found
                             current_conv_id = found.id
                             current_model = found.model or current_model
-                            client.model = current_model
                             try:
                                 model_info = resolve_model(current_model)
                             except ValueError:
@@ -308,11 +576,17 @@ async def interactive_chat(
                         continue
 
                     console.print("[bold]🔄 Compacting conversation...[/]")
-                    console.print("[dim]   Generating summary using AI...[/]")
                     try:
-                        new_conv = await ctx_mgr.compact(
-                            client, conv, store, instruction=instruction
-                        )
+                        active_sess = router.get_session(preferred=preferred_profile)
+                        try:
+                            async with GensparkClient(active_sess, model=current_model) as client:
+                                new_conv = await ctx_mgr.compact(
+                                    client, conv, store, instruction=instruction
+                                )
+                            router.mark_success(active_sess.profile_name)
+                        except Exception:
+                            router.release_session(active_sess.profile_name)
+                            raise
                         current_conv_id = new_conv.id
                         console.print(
                             f"[green]✓[/] Compacted! New session: {new_conv.id[:12]}...\n"
@@ -333,146 +607,107 @@ async def interactive_chat(
                         console.print("[dim]No active session.[/]")
                     continue
 
-                elif cmd == "/accounts":
-                    if router:
-                        statuses = router.get_status()
-                        console.print("[bold]🔐 Account Pool:[/]")
-                        for s in statuses:
-                            health_icons = {
-                                "healthy": "🟢",
-                                "cooldown": "🟡",
-                                "expired": "🔴",
-                                "needs_login": "⚪",
-                            }
-                            icon = health_icons.get(s["health"], "⚪")
-                            default = " ★" if s.get("is_default") else ""
-                            extra = ""
-                            if s.get("cooldown_remaining_s"):
-                                extra = f" (cooldown {s['cooldown_remaining_s']}s)"
-                            elif s.get("failure_reason"):
-                                extra = f" ({s['failure_reason']})"
-                            console.print(
-                                f"  {icon} [bold]{s['name']}[/]{default} — "
-                                f"{s['health']}{extra} "
-                                f"[dim]({s['total_requests']} reqs)[/]"
-                            )
-                    else:
-                        console.print("[dim]Single account mode.[/]")
-                    continue
-
                 else:
                     console.print(f"[yellow]Unknown command: {cmd}[/]. Type /help for commands.")
                     continue
 
-            # ── Send Chat ──
-            try:
-                # Get conversation for multi-turn context
-                conv = store.get(current_conv_id)
-                conversation_messages = None
-                project_id = None
+            # ── Send Chat with Multi-Account Routing & Auto-Failover ──
+            conv = store.get(current_conv_id)
+            conversation_messages = None
+            if conv and conv.messages:
+                conversation_messages = conv.get_messages_for_payload()
 
-                if conv and conv.messages:
-                    conversation_messages = conv.get_messages_for_payload()
-                    # If we have a project_id from Genspark, continue that thread
-                    if session.last_project_id:
-                        project_id = session.last_project_id
+            store.add_turn(current_conv_id, "user", prompt)
 
-                # Record user message
-                store.add_turn(current_conv_id, "user", prompt)
+            statuses = router.get_status()
+            max_attempts = max(1, len(statuses))
+            tried_profiles: set[str] = set()
+            succeeded = False
 
-                console.print(f"[bold cyan]{model_info.display_name}:[/] ", end="")
-                content_parts: list[str] = []
+            for attempt in range(max_attempts):
+                try:
+                    turn_session = router.get_session(
+                        preferred=preferred_profile if attempt == 0 else None,
+                        exclude=tried_profiles if attempt > 0 else None,
+                    )
+                except RuntimeError as re_err:
+                    console.print(f"\n[red]Pool exhausted:[/] {re_err}")
+                    break
 
-                async for chunk in client.chat_stream(
-                    prompt,
-                    model=current_model,
-                    project_id=project_id,
-                    messages=conversation_messages if conversation_messages else None,
-                ):
-                    if chunk.content:
-                        if raw_mode:
-                            print(chunk.content, end="", flush=True)
-                        else:
-                            print(chunk.content, end="", flush=True)
-                        content_parts.append(chunk.content)
+                turn_profile = turn_session.profile_name
+                current_profile = turn_profile
+                tried_profiles.add(turn_profile)
+                project_id = turn_session.last_project_id if (conv and conv.messages) else None
 
-                    # Track project_id from Genspark
-                    if chunk.project_id:
-                        store.set_project_id(current_conv_id, chunk.project_id)
+                try:
+                    console.print(
+                        f"[bold cyan]{model_info.display_name}[/] [dim]({turn_profile})[/]: ",
+                        end="",
+                    )
+                    content_parts: list[str] = []
 
-                print()  # newline after stream
+                    async with GensparkClient(turn_session, model=current_model) as client:
+                        async for chunk in client.chat_stream(
+                            prompt,
+                            model=current_model,
+                            project_id=project_id,
+                            messages=conversation_messages if conversation_messages else None,
+                        ):
+                            if chunk.content:
+                                print(chunk.content, end="", flush=True)
+                                content_parts.append(chunk.content)
+                            if chunk.project_id:
+                                store.set_project_id(current_conv_id, chunk.project_id)
 
-                # Record assistant response
-                full_response = "".join(content_parts)
-                if full_response:
-                    store.add_turn(current_conv_id, "assistant", full_response)
+                    print()
+                    full_response = "".join(content_parts)
+                    if full_response:
+                        store.add_turn(current_conv_id, "assistant", full_response)
 
-                # Mark account as successful
-                if router:
-                    router.mark_success(current_profile)
+                    router.mark_success(turn_profile)
+                    succeeded = True
+                    break
 
-                # ── Context Health Check ──
+                except ROUTING_ERRORS as e:
+                    reason = f"{type(e).__name__}: {e}".splitlines()[0][:100]
+                    router.mark_unhealthy(turn_profile, reason=reason)
+                    console.print(
+                        f"\n[yellow]↻ Account '{turn_profile}' hit {type(e).__name__} — failing over to next healthy account...[/]"
+                    )
+                except GensparkError as e:
+                    router.release_session(turn_profile)
+                    console.print(f"\n[red]Error:[/] {e}")
+                    log.error("REPL chat error: %s", e, exc_info=True)
+                    break
+                except Exception as e:
+                    router.release_session(turn_profile)
+                    console.print(f"\n[red]Unexpected error:[/] {e}")
+                    log.error("REPL unexpected error: %s", e, exc_info=True)
+                    break
+
+            if succeeded:
                 conv = store.get(current_conv_id)
                 if conv:
-                    health = ctx_mgr.check_health(conv)
-
-                    if health.should_auto_compact:
-                        # Auto-compact at 20+ turns
-                        console.print(f"\n{health.message}")
+                    ctx_health = ctx_mgr.check_health(conv)
+                    if ctx_health.should_auto_compact:
+                        console.print(f"\n{ctx_health.message}")
                         try:
-                            new_conv = await ctx_mgr.compact(client, conv, store)
-                            current_conv_id = new_conv.id
-                            console.print(
-                                f"[green]✓[/] Auto-compacted → {new_conv.id[:12]}..."
-                            )
+                            compact_sess = router.get_session(preferred=preferred_profile)
+                            try:
+                                async with GensparkClient(compact_sess, model=current_model) as client:
+                                    new_conv = await ctx_mgr.compact(client, conv, store)
+                                router.mark_success(compact_sess.profile_name)
+                                current_conv_id = new_conv.id
+                                console.print(f"[green]✓[/] Auto-compacted → {new_conv.id[:12]}...")
+                            except Exception:
+                                router.release_session(compact_sess.profile_name)
+                                raise
                         except Exception as e:
                             console.print(f"[yellow]Auto-compact failed:[/] {e}")
-
-                    elif health.advice != ContextAdvice.CONTINUE:
-                        # Show suggestion/warning
-                        console.print(f"\n{health.message}")
-
-            except (SessionExpiredError, RecaptchaError) as e:
-                console.print(f"\n[red]Error:[/] {e}")
-                if router:
-                    router.mark_unhealthy(current_profile, reason=type(e).__name__)
-                    try:
-                        new_session = router.get_session()
-                        current_profile = new_session.profile_name
-                        console.print(
-                            f"[yellow]↻ Switched to account '[cyan]{current_profile}[/]'[/]"
-                        )
-                        # Recreate client with new session
-                        await client.close()
-                        client.session = new_session
-                        client._http = None
-                    except RuntimeError as re:
-                        console.print(f"[red]No fallback accounts:[/] {re}")
-                else:
-                    log.error("REPL auth error: %s", e, exc_info=True)
-
-            except RateLimitError as e:
-                console.print(f"\n[yellow]Rate limited:[/] {e}")
-                if router:
-                    router.mark_unhealthy(current_profile, reason="rate_limit")
-                    try:
-                        new_session = router.get_session()
-                        current_profile = new_session.profile_name
-                        console.print(
-                            f"[yellow]↻ Switched to account '[cyan]{current_profile}[/]'[/]"
-                        )
-                        await client.close()
-                        client.session = new_session
-                        client._http = None
-                    except RuntimeError as re:
-                        console.print(f"[red]No fallback accounts:[/] {re}")
-
-            except GensparkError as e:
-                console.print(f"\n[red]Error:[/] {e}")
-                log.error("REPL chat error: %s", e, exc_info=True)
-            except Exception as e:
-                console.print(f"\n[red]Unexpected error:[/] {e}")
-                log.error("REPL unexpected error: %s", e, exc_info=True)
+                    elif ctx_health.advice != ContextAdvice.CONTINUE:
+                        console.print(f"\n{ctx_health.message}")
+    finally:
+        _save_readline_history(pm.base_dir)
 
 
 def run_interactive(
@@ -483,11 +718,13 @@ def run_interactive(
 ) -> None:
     """Synchronous wrapper for the interactive REPL."""
     try:
-        asyncio.run(interactive_chat(
-            session,
-            model=model,
-            profile_manager=profile_manager,
-            profile_name=profile_name,
-        ))
+        asyncio.run(
+            interactive_chat(
+                session,
+                model=model,
+                profile_manager=profile_manager,
+                profile_name=profile_name,
+            )
+        )
     except KeyboardInterrupt:
         console.print("\n[dim]Goodbye![/]")

@@ -15,6 +15,7 @@ from .auth import _refresh_recaptcha_token
 from .exceptions import (
     APIError,
     NetworkError,
+    QuotaExhaustedError,
     RateLimitError,
     RecaptchaError,
     SessionExpiredError,
@@ -128,6 +129,11 @@ class GensparkClient:
                 "Genspark rejected the browser session cookies",
                 details=f"HTTP {status}",
             )
+        if status == 402:
+            raise QuotaExhaustedError(
+                "Account daily credits or model quota exhausted",
+                status_code=status,
+            )
         if status == 403:
             raise RecaptchaError(status_code=status)
         if status == 429:
@@ -136,6 +142,23 @@ class GensparkClient:
             "Unexpected response from Genspark",
             status_code=status,
         )
+
+    @staticmethod
+    def _check_sse_error_chunk(chunk: ChatChunk) -> None:
+        if chunk.event_type != "error":
+            return
+        raw = chunk.raw or {}
+        err_msg = str(raw.get("error_message") or raw.get("message") or "Upstream SSE error")
+        lower = err_msg.lower()
+        if any(kw in lower for kw in ("credit", "quota", "insufficient", "daily limit", "upgrade", "exhausted", "balance")):
+            raise QuotaExhaustedError(err_msg)
+        if any(kw in lower for kw in ("rate limit", "too many requests", "throttle", "slow down")):
+            raise RateLimitError(err_msg)
+        if any(kw in lower for kw in ("recaptcha", "captcha", "challenge")):
+            raise RecaptchaError(err_msg)
+        if any(kw in lower for kw in ("unauthorized", "expired", "login", "unauthenticated")):
+            raise SessionExpiredError(err_msg)
+        raise APIError(err_msg)
 
     async def _chat_stream_once(
         self,
@@ -168,6 +191,7 @@ class GensparkClient:
                 self._check_status(response)
                 async for line in response.aiter_lines():
                     for chunk in parse_sse_stream(line):
+                        self._check_sse_error_chunk(chunk)
                         yield chunk
         except httpx.TimeoutException as exc:
             raise GensparkTimeoutError(

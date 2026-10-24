@@ -74,6 +74,20 @@ class RateLimitError(APIError):
         )
 
 
+class QuotaExhaustedError(RateLimitError):
+    """Account daily credits or model quota have been exhausted."""
+
+    def __init__(self, message: str = "Account daily credits or model quota exhausted", **kwargs):
+        super().__init__(
+            message,
+            suggestion=kwargs.pop(
+                "suggestion",
+                "Add another account with 'gsk pool add <name>' or wait for quota reset.",
+            ),
+            **kwargs,
+        )
+
+
 class RecaptchaError(APIError):
     """reCAPTCHA challenge blocked the request.
 

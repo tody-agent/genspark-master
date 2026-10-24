@@ -14,12 +14,16 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 ROOT_FILES = (
     ".mcp.json",
+    "plugin.json",
+    "mcp_config.json",
+    "rules/AGENTS.md",
     "README.md",
     "pyproject.toml",
     "requirements.txt",
 )
 TREE_FILES = (
     (Path(".codex-plugin"), {".json"}),
+    (Path(".claude-plugin"), {".json"}),
     (Path("skills"), {".md", ".yaml", ".yml", ".json"}),
     (Path("genspark_cli"), {".py"}),
 )

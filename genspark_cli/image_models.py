@@ -55,6 +55,22 @@ IMAGE_MODELS: dict[str, ImageModelInfo] = {
         features=["multi-image-editing", "chinese-text", "fashion"],
         description="2K/3K resolution with multi-image editing. Excellent for Chinese text and fashion.",
     ),
+    "seedream-v5-pro": ImageModelInfo(
+        id="seedream-v5-pro",
+        display_name="Bytedance Seedream 5.0 Pro",
+        provider="bytedance",
+        max_resolution="4K",
+        features=["flagship", "photorealism", "detail"],
+        description="Bytedance Seedream 5.0 Pro flagship image generation model.",
+    ),
+    "seedream-5.0-pro": ImageModelInfo(
+        id="seedream-5.0-pro",
+        display_name="Bytedance Seedream 5.0 Pro",
+        provider="bytedance",
+        max_resolution="4K",
+        features=["flagship", "photorealism", "detail"],
+        description="Bytedance Seedream 5.0 Pro flagship image generation model.",
+    ),
     "flux-2": ImageModelInfo(
         id="flux-2",
         display_name="Flux 2",
@@ -235,7 +251,7 @@ def resolve_image_model(name: str) -> ImageModelInfo:
 
     available = ", ".join(sorted(IMAGE_MODELS.keys()))
     raise ValueError(
-        f"Unknown image model: '{name}'. Available models:\n  {available}"
+        f"Unknown image model: '{name}'. Available: {available}"
     )
 
 

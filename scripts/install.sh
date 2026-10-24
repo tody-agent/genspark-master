@@ -116,11 +116,22 @@ install_to_dest() {
 
     mkdir -p "$(dirname "$dest_dir")"
     if [ "$USE_SYMLINK" -eq 1 ]; then
-        echo "  🔗 Linking $name plugin -> $dest_dir"
+        echo "  🔗 Linking $name plugin contents -> $dest_dir"
         rm -rf "$dest_dir"
-        ln -s "$PLUGIN_ROOT" "$dest_dir"
+        mkdir -p "$dest_dir"
+        for item in "$PLUGIN_ROOT"/* "$PLUGIN_ROOT"/.codex-plugin "$PLUGIN_ROOT"/.claude-plugin "$PLUGIN_ROOT"/.mcp.json "$PLUGIN_ROOT"/.venv; do
+            [ -e "$item" ] || continue
+            base_item="$(basename "$item")"
+            case "$base_item" in
+                dist|.git|.pytest_cache|__pycache__|.DS_Store)
+                    continue
+                    ;;
+            esac
+            ln -snf "$item" "$dest_dir/$base_item"
+        done
     else
         echo "  📋 Copying files to $name plugin -> $dest_dir"
+        rm -rf "$dest_dir"
         mkdir -p "$dest_dir"
         # Copy core files excluding dev/cache
         rsync -a --exclude='.git' \
@@ -129,8 +140,28 @@ install_to_dest() {
                  --exclude='*.pyc' \
                  --exclude='.pytest_cache' \
                  --exclude='.DS_Store' \
+                 --exclude='dist' \
                  "$PLUGIN_ROOT/" "$dest_dir/"
+        if [ -d "$VENV_DIR" ]; then
+            ln -snf "$VENV_DIR" "$dest_dir/.venv"
+        fi
     fi
+}
+
+sync_skills_dir() {
+    local skills_dest="$1"
+    [ -d "$skills_dest" ] || return 0
+    for skill_dir in "$PLUGIN_ROOT/skills/"*; do
+        [ -d "$skill_dir" ] || continue
+        local sname
+        sname="$(basename "$skill_dir")"
+        rm -rf "$skills_dest/$sname"
+        if [ "$USE_SYMLINK" -eq 1 ]; then
+            ln -snf "$skill_dir" "$skills_dest/$sname"
+        else
+            cp -r "$skill_dir" "$skills_dest/$sname"
+        fi
+    done
 }
 
 # 4. Target Platforms Installation
@@ -138,37 +169,36 @@ case "$TARGET_PLATFORM" in
     gemini)
         echo "📦 Installing to Google Antigravity / Gemini CLI..."
         install_to_dest "$HOME/.gemini/config/plugins/genspark" "Antigravity/Gemini"
+        sync_skills_dir "$HOME/.gemini/config/skills"
         ;;
     claude)
         echo "📦 Installing to Claude Code..."
         install_to_dest "$HOME/.claude/plugins/genspark" "Claude Code"
-        # Also copy skills to ~/.claude/skills if directory exists
-        if [ -d "$HOME/.claude/skills" ]; then
-            cp -r "$PLUGIN_ROOT/skills/"* "$HOME/.claude/skills/" 2>/dev/null || true
-        fi
+        sync_skills_dir "$HOME/.claude/skills"
         ;;
     codex)
         echo "📦 Installing to OpenAI Codex..."
         install_to_dest "$HOME/.codex/plugins/genspark" "OpenAI Codex"
-        if [ -d "$HOME/.codex/skills" ]; then
-            cp -r "$PLUGIN_ROOT/skills/"* "$HOME/.codex/skills/" 2>/dev/null || true
-        fi
+        sync_skills_dir "$HOME/.codex/skills"
         ;;
     all)
         # Antigravity / Gemini CLI
         if [ -d "$HOME/.gemini" ] || [ ! -d "$HOME/.claude" ]; then
             echo "📦 Installing to Google Antigravity / Gemini CLI..."
             install_to_dest "$HOME/.gemini/config/plugins/genspark" "Antigravity/Gemini"
+            sync_skills_dir "$HOME/.gemini/config/skills"
         fi
         # Claude Code
         if [ -d "$HOME/.claude" ]; then
             echo "📦 Installing to Claude Code..."
             install_to_dest "$HOME/.claude/plugins/genspark" "Claude Code"
+            sync_skills_dir "$HOME/.claude/skills"
         fi
         # OpenAI Codex
         if [ -d "$HOME/.codex" ]; then
             echo "📦 Installing to OpenAI Codex..."
             install_to_dest "$HOME/.codex/plugins/genspark" "OpenAI Codex"
+            sync_skills_dir "$HOME/.codex/skills"
         fi
         ;;
 esac
